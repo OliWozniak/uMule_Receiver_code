@@ -310,7 +310,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
     hdma_adc1.Init.PeriphInc = DMA_PINC_DISABLE;
     hdma_adc1.Init.MemInc = DMA_MINC_ENABLE;
     hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
-    hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
+    hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
     hdma_adc1.Init.Mode = DMA_CIRCULAR;
     hdma_adc1.Init.Priority = DMA_PRIORITY_LOW;
     if (HAL_DMA_Init(&hdma_adc1) != HAL_OK)
@@ -364,7 +364,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
     hdma_adc3.Init.PeriphInc = DMA_PINC_DISABLE;
     hdma_adc3.Init.MemInc = DMA_MINC_ENABLE;
     hdma_adc3.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
-    hdma_adc3.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
+    hdma_adc3.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
     hdma_adc3.Init.Mode = DMA_CIRCULAR;
     hdma_adc3.Init.Priority = DMA_PRIORITY_LOW;
     if (HAL_DMA_Init(&hdma_adc3) != HAL_OK)
@@ -418,7 +418,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* adcHandle)
     hdma_adc4.Init.PeriphInc = DMA_PINC_DISABLE;
     hdma_adc4.Init.MemInc = DMA_MINC_ENABLE;
     hdma_adc4.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
-    hdma_adc4.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
+    hdma_adc4.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
     hdma_adc4.Init.Mode = DMA_CIRCULAR;
     hdma_adc4.Init.Priority = DMA_PRIORITY_LOW;
     if (HAL_DMA_Init(&hdma_adc4) != HAL_OK)

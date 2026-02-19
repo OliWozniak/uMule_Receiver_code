@@ -28,8 +28,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#define ARM_MATH_CM4
 #include <stdio.h>
 #include <string.h>
+#include "arm_math.h" // Niezbędne dla float32_t i funkcji FFT
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -39,7 +41,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define SAMPLES 1024      // Rozmiar okna FFT
+#define CH_PER_ADC 3      // Kanały na jeden przetwornik
+#define TOTAL_CHANNELS 9  // Suma kanałów (8 diod + 1 ref)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,16 +54,18 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+// Bufory surowe dla DMA (rozmiar * 2 dla obsługi Half Transfer i Complete Transfer)
+uint16_t Raw_ADC1[CH_PER_ADC * SAMPLES * 2];
+uint16_t Raw_ADC3[CH_PER_ADC * SAMPLES * 2];
+uint16_t Raw_ADC4[CH_PER_ADC * SAMPLES * 2];
 
-uint16_t ADC_Read_1[3];
-uint16_t ADC_Read_3[3];
-uint16_t ADC_Read_4[3];
+// Bufor po rozdzieleniu kanałów, gotowy do FFT
+float32_t FFT_Input_Buffer[TOTAL_CHANNELS][SAMPLES];
 
-uint16_t Photodiodes[8];
-uint16_t ADC_Ref[1];
+// Flaga informująca o gotowości danych (volatile, bo zmieniana w przerwaniu)
+volatile uint8_t data_ready_flag = 0;
 
-uint8_t UartMessage[32];
-
+uint8_t UartMessage[64];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -126,24 +132,56 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_Base_Start(&htim3);
+    HAL_TIM_Base_Start(&htim3);
 
-  HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
-  HAL_ADCEx_Calibration_Start(&hadc3, ADC_SINGLE_ENDED);
-  HAL_ADCEx_Calibration_Start(&hadc4, ADC_SINGLE_ENDED);
+    HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+    HAL_ADCEx_Calibration_Start(&hadc3, ADC_SINGLE_ENDED);
+    HAL_ADCEx_Calibration_Start(&hadc4, ADC_SINGLE_ENDED);
 
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)ADC_Read_1, 3);
-  HAL_ADC_Start_DMA(&hadc3, (uint32_t*)ADC_Read_3, 3);
-  HAL_ADC_Start_DMA(&hadc4, (uint32_t*)ADC_Read_4, 3);
-  /* USER CODE END 2 */
+    // Rozmiar w HAL_ADC_Start_DMA podajemy jako całkowitą liczbę elementów w tablicy
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)Raw_ADC1, CH_PER_ADC * SAMPLES * 2);
+    HAL_ADC_Start_DMA(&hadc3, (uint32_t*)Raw_ADC3, CH_PER_ADC * SAMPLES * 2);
+    HAL_ADC_Start_DMA(&hadc4, (uint32_t*)Raw_ADC4, CH_PER_ADC * SAMPLES * 2);
+
+    UART4_Print((uint8_t*)"System Ready\n");
+    /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
 
-	  sprintf((char*)UartMessage, "X: %d, Y: %d\n\r", (int)ADC_Read_1[0], (int)ADC_Read_1[2]);
-	  UART4_Print(UartMessage);
+	  if (data_ready_flag > 0) {
+		  HAL_GPIO_TogglePin(GPIOB, 3);
+	            // Jeśli flaga == 1, czytamy pierwszą połowę (offset 0)
+	            // Jeśli flaga == 2, czytamy drugą połowę (offset po SAMPLES * kanały)
+	            uint32_t offset = (data_ready_flag == 1) ? 0 : (CH_PER_ADC * SAMPLES);
+
+	            for (int i = 0; i < SAMPLES; i++) {
+	                // Rozdzielanie danych (De-interleaving)
+	                // ADC1: Diody 0, 1, 2
+	                FFT_Input_Buffer[0][i] = (float32_t)Raw_ADC1[offset + i*CH_PER_ADC + 0];
+	                FFT_Input_Buffer[1][i] = (float32_t)Raw_ADC1[offset + i*CH_PER_ADC + 1];
+	                FFT_Input_Buffer[2][i] = (float32_t)Raw_ADC1[offset + i*CH_PER_ADC + 2];
+
+	                // ADC3: Diody 3, 4, 5
+	                FFT_Input_Buffer[3][i] = (float32_t)Raw_ADC3[offset + i*CH_PER_ADC + 0];
+	                FFT_Input_Buffer[4][i] = (float32_t)Raw_ADC3[offset + i*CH_PER_ADC + 1];
+	                FFT_Input_Buffer[5][i] = (float32_t)Raw_ADC3[offset + i*CH_PER_ADC + 2];
+
+	                // ADC4: Diody 6, 7 i Reference
+	                FFT_Input_Buffer[6][i] = (float32_t)Raw_ADC4[offset + i*CH_PER_ADC + 0];
+	                FFT_Input_Buffer[7][i] = (float32_t)Raw_ADC4[offset + i*CH_PER_ADC + 1];
+	                FFT_Input_Buffer[8][i] = (float32_t)Raw_ADC4[offset + i*CH_PER_ADC + 2];
+	            }
+
+	            // RESET FLAGI - ważne!
+	            data_ready_flag = 0;
+
+	            // Opcjonalny test: wyświetl wartość pierwszej próbki pierwszej diody
+	            sprintf((char*)UartMessage, "Dioda0[0]: %.2f\r\n", FFT_Input_Buffer[1][0]);
+	            UART4_Print(UartMessage);
+	        }
 
     /* USER CODE END WHILE */
 
@@ -193,6 +231,17 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+// Callback wywoływany w połowie zapełnienia bufora
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
+    if(hadc->Instance == ADC1) data_ready_flag = 1;
+}
+
+// Callback wywoływany przy pełnym buforze
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+    if(hadc->Instance == ADC1) data_ready_flag = 2;
+}
+
 void UART4_Print(uint8_t* Message)
 {
 	HAL_UART_Transmit(&huart4, Message, strlen((char*)Message), 100);
