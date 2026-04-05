@@ -50,3 +50,12 @@ release
 *.su
 *.idb
 *.pdb
+
+# CubeMX logs and backup
+*.log
+/Backup/
+
+.vscode/
+.pio/
+.pioenvs/
+.piolibdeps/

@@ -17,7 +17,6 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 /* USER CODE BEGIN Includes */
@@ -73,6 +72,11 @@ void HAL_MspInit(void)
   /* System interrupt init*/
   /* PendSV_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(PendSV_IRQn, 15, 0);
+
+  /* Peripheral interrupt init */
+  /* FPU_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(FPU_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(FPU_IRQn);
 
   /** Disable the internal Pull-Up in Dead Battery pins of UCPD peripheral
   */
