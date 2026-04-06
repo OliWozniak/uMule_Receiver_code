@@ -26,7 +26,6 @@ release
 
 # Libraries
 *.lib
-*.a
 *.la
 *.lo
 
