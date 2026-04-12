@@ -114,7 +114,6 @@ void microros_deallocate(void * pointer, void * state);
 void * microros_reallocate(void * pointer, size_t size, void * state);
 void * microros_zero_allocate(size_t number_of_elements, size_t size_of_element, void * state);
 /* USER CODE END PFP */
-/* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
@@ -172,19 +171,18 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, 1);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1);
 
-    UART4_Print((uint8_t*)"System Ready\n");
+  microrosTaskHandle = osThreadNew(StartMicroRosTask, NULL, &microrosTask_attributes);
+  adcTaskHandle = osThreadNew(StartADCTask, NULL, &adcTask_attributes);
+
   /* USER CODE END 2 */
 
   /* Init scheduler */
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
-
-  /* USER CODE BEGIN RTOS_THREADS */
-    // Tworzymy zadania
-    microrosTaskHandle = osThreadNew(StartMicroRosTask, NULL, &microrosTask_attributes);
-    adcTaskHandle = osThreadNew(StartADCTask, NULL, &adcTask_attributes);
-  /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
   osKernelStart();
@@ -218,12 +216,11 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV4;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV2;
   RCC_OscInitStruct.PLL.PLLN = 85;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
@@ -252,44 +249,53 @@ void SystemClock_Config(void)
 
 // --- ZADANIE PRZETWARZANIA ADC ---
 void StartADCTask(void *argument) {
+    osDelay(1000); // Czekaj dokładnie 1 sekundę
 
 }
 
 // --- ZADANIE MICRO-ROS ---
 void StartMicroRosTask(void *argument) {
-	rmw_uros_set_custom_transport(
-	        true,
-	        (void *) &huart1,
-	        cubemx_transport_open,
-	        cubemx_transport_close,
-	        cubemx_transport_write,
-	        cubemx_transport_read
-	    );
+    // 1. Inicjalizacja transportu (tylko raz!)
+    rmw_uros_set_custom_transport(
+        true, (void *) &huart4,
+        cubemx_transport_open, cubemx_transport_close,
+        cubemx_transport_write, cubemx_transport_read
+    );
 
+    // 2. Pętla oczekiwania na Agenta (BEZ UART4_Print!)
+    while (rmw_uros_ping_agent(100, 1) != RMW_RET_OK) {
+        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_4); // Migaj LEDem, że czekasz
+        osDelay(500);
+    }
+
+    // Jeśli tu jesteśmy, Agent odpowiedział
     allocator = rcl_get_default_allocator();
 
-    // 2. Inicjalizacja wsparcia i węzła
-    rclc_support_init(&support, 0, NULL, &allocator);
-    rclc_node_init_default(&node, "uMule_Receiver_Node", "", &support);
+    if (rclc_support_init(&support, 0, NULL, &allocator) != RCL_RET_OK) {
+        // Obsługa błędu (np. świeć światłem ciągłym)
+        Error_Handler();
+    }
 
-    // 3. Inicjalizacja publisherea
-    rclc_publisher_init_default(
+    if (rclc_node_init_default(&node, "uMule_Receiver_Node", "", &support) != RCL_RET_OK) {
+        Error_Handler();
+    }
+
+    if (rclc_publisher_init_default(
         &publisher, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-        "sensor_status"
-    );
+        "sensor_status") != RCL_RET_OK) {
+        Error_Handler();
+    }
 
     msg.data = 0;
 
     for(;;) {
-        // Publikacja licznika
-        rcl_ret_t ret = rcl_publish(&publisher, &msg, NULL);
-
-        if (ret == RCL_RET_OK) {
-            msg.data++; // Inkrementacja "statusu"
+        // Publikacja
+        if (rcl_publish(&publisher, &msg, NULL) == RCL_RET_OK) {
+            msg.data++;
+            HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3); // Mignięcie przy sukcesie
         }
-
-        osDelay(1000); // Czekaj dokładnie 1 sekundę
+        osDelay(1000);
     }
 }
 
@@ -300,15 +306,6 @@ void UART4_Print(uint8_t* Message)
 }
 
 /* USER CODE BEGIN 4 */
-bool cubemx_transport_open(struct uxrCustomTransport * transport);
-bool cubemx_transport_close(struct uxrCustomTransport * transport);
-size_t cubemx_transport_write(struct uxrCustomTransport* transport, const uint8_t * buf, size_t len, uint8_t * err);
-size_t cubemx_transport_read(struct uxrCustomTransport* transport, uint8_t* buf, size_t len, int timeout, uint8_t* err);
-
-void * microros_allocate(size_t size, void * state);
-void microros_deallocate(void * pointer, void * state);
-void * microros_reallocate(void * pointer, size_t size, void * state);
-void * microros_zero_allocate(size_t number_of_elements, size_t size_of_element, void * state);
 
 /* USER CODE END 4 */
 
