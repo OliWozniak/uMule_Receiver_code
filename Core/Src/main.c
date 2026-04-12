@@ -98,10 +98,6 @@ void UART4_Print(uint8_t* Message);
 void StartMicroRosTask(void *argument);
 void StartADCTask(void *argument);
 
-/* USER CODE BEGIN PFP */
-void StartMicroRosTask(void *argument);
-void StartADCTask(void *argument);
-
 // Deklaracje funkcji transportowych micro-ROS
 bool cubemx_transport_open(struct uxrCustomTransport * transport);
 bool cubemx_transport_close(struct uxrCustomTransport * transport);
@@ -175,8 +171,8 @@ int main(void)
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1);
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1);
 
-  microrosTaskHandle = osThreadNew(StartMicroRosTask, NULL, &microrosTask_attributes);
-  adcTaskHandle = osThreadNew(StartADCTask, NULL, &adcTask_attributes);
+//  microrosTaskHandle = osThreadNew(StartMicroRosTask, NULL, &microrosTask_attributes);
+//  adcTaskHandle = osThreadNew(StartADCTask, NULL, &adcTask_attributes);
 
   /* USER CODE END 2 */
 
@@ -248,56 +244,6 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 
 // --- ZADANIE PRZETWARZANIA ADC ---
-void StartADCTask(void *argument) {
-    osDelay(1000); // Czekaj dokładnie 1 sekundę
-
-}
-
-// --- ZADANIE MICRO-ROS ---
-void StartMicroRosTask(void *argument) {
-    // 1. Inicjalizacja transportu (tylko raz!)
-    rmw_uros_set_custom_transport(
-        true, (void *) &huart4,
-        cubemx_transport_open, cubemx_transport_close,
-        cubemx_transport_write, cubemx_transport_read
-    );
-
-    // 2. Pętla oczekiwania na Agenta (BEZ UART4_Print!)
-    while (rmw_uros_ping_agent(100, 1) != RMW_RET_OK) {
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_4); // Migaj LEDem, że czekasz
-        osDelay(500);
-    }
-
-    // Jeśli tu jesteśmy, Agent odpowiedział
-    allocator = rcl_get_default_allocator();
-
-    if (rclc_support_init(&support, 0, NULL, &allocator) != RCL_RET_OK) {
-        // Obsługa błędu (np. świeć światłem ciągłym)
-        Error_Handler();
-    }
-
-    if (rclc_node_init_default(&node, "uMule_Receiver_Node", "", &support) != RCL_RET_OK) {
-        Error_Handler();
-    }
-
-    if (rclc_publisher_init_default(
-        &publisher, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32),
-        "sensor_status") != RCL_RET_OK) {
-        Error_Handler();
-    }
-
-    msg.data = 0;
-
-    for(;;) {
-        // Publikacja
-        if (rcl_publish(&publisher, &msg, NULL) == RCL_RET_OK) {
-            msg.data++;
-            HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3); // Mignięcie przy sukcesie
-        }
-        osDelay(1000);
-    }
-}
 
 
 void UART4_Print(uint8_t* Message)
