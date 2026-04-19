@@ -51,7 +51,7 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2|DBG_LED0_Pin|DBG_LED1_Pin|DBG_LED2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, RS_485_FC_Pin|DBG_LED0_Pin|DBG_LED1_Pin|DBG_LED2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -59,8 +59,15 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB2 DBG_LED0_Pin DBG_LED1_Pin DBG_LED2_Pin */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|DBG_LED0_Pin|DBG_LED1_Pin|DBG_LED2_Pin;
+  /*Configure GPIO pin : RS_485_FC_Pin */
+  GPIO_InitStruct.Pin = RS_485_FC_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(RS_485_FC_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : DBG_LED0_Pin DBG_LED1_Pin DBG_LED2_Pin */
+  GPIO_InitStruct.Pin = DBG_LED0_Pin|DBG_LED1_Pin|DBG_LED2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;

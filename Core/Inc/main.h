@@ -65,6 +65,12 @@ void Error_Handler(void);
 #define UART_TX_Ex_ESP_GPIO_Port GPIOC
 #define UART_RX_Ex_ESP_Pin GPIO_PIN_5
 #define UART_RX_Ex_ESP_GPIO_Port GPIOC
+#define RS_485_FC_Pin GPIO_PIN_2
+#define RS_485_FC_GPIO_Port GPIOB
+#define RS_485_TX_Pin GPIO_PIN_10
+#define RS_485_TX_GPIO_Port GPIOB
+#define RS_485_RX_Pin GPIO_PIN_11
+#define RS_485_RX_GPIO_Port GPIOB
 #define DBG_LED0_Pin GPIO_PIN_3
 #define DBG_LED0_GPIO_Port GPIOB
 #define DBG_LED1_Pin GPIO_PIN_4

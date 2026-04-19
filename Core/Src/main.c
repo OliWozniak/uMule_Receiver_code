@@ -43,6 +43,8 @@
 
 #include <std_msgs/msg/int32.h>
 
+#include "rx_64_comm.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -86,6 +88,7 @@ std_msgs__msg__Int32 msg;
 rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,7 +122,7 @@ int __io_putchar(int ch)
   if (ch == '\n') {
     __io_putchar('\r');
   }
-  HAL_UART_Transmit(&huart4, (uint8_t*)&ch, 1, HAL_MAX_DELAY);
+  HAL_UART_Transmit(&huart4, (uint8_t*)&ch, 1, 10);
   return 1;
 }
 
@@ -167,17 +170,33 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, 1);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1);
 
-//  microrosTaskHandle = osThreadNew(StartMicroRosTask, NULL, &microrosTask_attributes);
-//  adcTaskHandle = osThreadNew(StartADCTask, NULL, &adcTask_attributes);
+//  Servo test_wheel = AxelFlow_servo_init(0x03, &huart3, false);
+//
+//  DX64_GetFullState(&test_wheel);
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, 1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1);
+
+    UART4_Print((uint8_t*)"Peripherals Initialized. Starting Kernel...\n");
+
+
 
   /* USER CODE END 2 */
 
   /* Init scheduler */
-  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
+    osKernelInitialize(); // Najpierw inicjalizacja jądra!
+    /* USER CODE BEGIN TASKS */
+    dynamixelQueueHandle = osMessageQueueNew(10, sizeof(DynamixelCommand_t), NULL);
+
+    if (dynamixelQueueHandle != NULL) {
+        osThreadNew(StartDynamixelTask, NULL, &dynamixelTask_attributes);
+    } else {
+        UART4_Print((uint8_t*)"Failed to create Queue!\n");
+    }
+    /* USER CODE END TASKS */
+
   MX_FREERTOS_Init();
 
   /* Start scheduler */
