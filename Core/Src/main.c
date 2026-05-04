@@ -68,19 +68,8 @@
 
 /* USER CODE BEGIN PV */
 /* USER CODE BEGIN PV */
-osThreadId_t microrosTaskHandle;
-const osThreadAttr_t microrosTask_attributes = {
-  .name = "microrosTask",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 3000 * 4 // micro-ROS potrzebuje sporo stosu!
-};
-
-osThreadId_t adcTaskHandle;
-const osThreadAttr_t adcTask_attributes = {
-  .name = "adcTask",
-  .priority = (osPriority_t) osPriorityAboveNormal, // Wyższy priorytet dla przetwarzania danych
-  .stack_size = 1000 * 4
-};
+extern osThreadId_t defaultTaskHandle;
+extern const osThreadAttr_t defaultTask_attributes;
 
 // Obiekty micro-ROS
 rcl_publisher_t publisher;
@@ -175,12 +164,11 @@ int main(void)
 //
 //  DX64_GetFullState(&test_wheel);
 
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, 1);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1);
-
-    UART4_Print((uint8_t*)"Peripherals Initialized. Starting Kernel...\n");
-
+  // Sygnalizacja startu (trzy diody)
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, 1);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1);
+  UART4_Print((uint8_t*)"Peripherals OK. Starting RTOS...\n");
 
 
   /* USER CODE END 2 */
@@ -188,13 +176,21 @@ int main(void)
   /* Init scheduler */
     osKernelInitialize(); // Najpierw inicjalizacja jądra!
     /* USER CODE BEGIN TASKS */
-    dynamixelQueueHandle = osMessageQueueNew(10, sizeof(DynamixelCommand_t), NULL);
+    // Kolejka poleceń: ROS -> Dynamixel (cmd_vel callback -> DynamixelTask)
+    dynamixelCmdQueueHandle = osMessageQueueNew(
+        20, sizeof(DynamixelCommand_t), NULL);
 
-    if (dynamixelQueueHandle != NULL) {
+    // Kolejka feedbacku: DynamixelTask -> micro-ROS task (wheel_state)
+    wheelFeedbackQueueHandle = osMessageQueueNew(
+        4, sizeof(WheelStateFeedback_t), NULL);
+
+    if (dynamixelCmdQueueHandle != NULL && wheelFeedbackQueueHandle != NULL) {
         osThreadNew(StartDynamixelTask, NULL, &dynamixelTask_attributes);
+        UART4_Print((uint8_t*)"DynamixelTask created OK\n");
     } else {
-        UART4_Print((uint8_t*)"Failed to create Queue!\n");
+        UART4_Print((uint8_t*)"ERROR: Queue creation failed!\n");
     }
+
     /* USER CODE END TASKS */
 
   MX_FREERTOS_Init();
