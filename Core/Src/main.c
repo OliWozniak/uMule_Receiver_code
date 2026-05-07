@@ -32,18 +32,8 @@
 #define ARM_MATH_CM4
 #include <stdio.h>
 #include <string.h>
-#include "arm_math.h" // Niezbędne dla float32_t i funkcji FFT
-#include <rcl/rcl.h>
-#include <rcl/error_handling.h>
-#include <rclc/rclc.h>
-#include <rclc/executor.h>
-#include <uxr/client/transport.h>
-#include <rmw_microxrcedds_c/config.h>
-#include <rmw_microros/rmw_microros.h>
+#include "arm_math.h"
 
-#include <std_msgs/msg/int32.h>
-
-#include "rx_64_comm.h"
 
 /* USER CODE END Includes */
 
@@ -54,9 +44,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SAMPLES 1024      // Rozmiar okna FFT
-#define CH_PER_ADC 3      // Kanały na jeden przetwornik
-#define TOTAL_CHANNELS 9  // Suma kanałów (8 diod + 1 ref)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,39 +55,13 @@
 
 /* USER CODE BEGIN PV */
 /* USER CODE BEGIN PV */
-extern osThreadId_t defaultTaskHandle;
-extern const osThreadAttr_t defaultTask_attributes;
-
-// Obiekty micro-ROS
-rcl_publisher_t publisher;
-std_msgs__msg__Int32 msg;
-rclc_support_t support;
-rcl_allocator_t allocator;
-rcl_node_t node;
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-void ADC_SetActiveChannel(ADC_HandleTypeDef *hadc, uint32_t AdcChannel);
 void UART4_Print(uint8_t* Message);
-
-void StartMicroRosTask(void *argument);
-void StartADCTask(void *argument);
-
-// Deklaracje funkcji transportowych micro-ROS
-bool cubemx_transport_open(struct uxrCustomTransport * transport);
-bool cubemx_transport_close(struct uxrCustomTransport * transport);
-size_t cubemx_transport_write(struct uxrCustomTransport* transport, const uint8_t * buf, size_t len, uint8_t * err);
-size_t cubemx_transport_read(struct uxrCustomTransport* transport, uint8_t* buf, size_t len, int timeout, uint8_t* err);
-
-// Deklaracje allocatorów
-void * microros_allocate(size_t size, void * state);
-void microros_deallocate(void * pointer, void * state);
-void * microros_reallocate(void * pointer, size_t size, void * state);
-void * microros_zero_allocate(size_t number_of_elements, size_t size_of_element, void * state);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -174,23 +135,8 @@ int main(void)
   /* USER CODE END 2 */
 
   /* Init scheduler */
-    osKernelInitialize(); // Najpierw inicjalizacja jądra!
+    osKernelInitialize();
     /* USER CODE BEGIN TASKS */
-    // Kolejka poleceń: ROS -> Dynamixel (cmd_vel callback -> DynamixelTask)
-    dynamixelCmdQueueHandle = osMessageQueueNew(
-        20, sizeof(DynamixelCommand_t), NULL);
-
-    // Kolejka feedbacku: DynamixelTask -> micro-ROS task (wheel_state)
-    wheelFeedbackQueueHandle = osMessageQueueNew(
-        4, sizeof(WheelStateFeedback_t), NULL);
-
-    if (dynamixelCmdQueueHandle != NULL && wheelFeedbackQueueHandle != NULL) {
-        osThreadNew(StartDynamixelTask, NULL, &dynamixelTask_attributes);
-        UART4_Print((uint8_t*)"DynamixelTask created OK\n");
-    } else {
-        UART4_Print((uint8_t*)"ERROR: Queue creation failed!\n");
-    }
-
     /* USER CODE END TASKS */
 
   MX_FREERTOS_Init();
