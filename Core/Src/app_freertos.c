@@ -36,7 +36,7 @@
 // ROS_DOMAIN_ID - musi byc identyczne jak na komputerze hosta (export ROS_DOMAIN_ID=...)
 // ---------------------------------------------------------------------------
 #ifndef ROS_DOMAIN_ID
-#define ROS_DOMAIN_ID   42        // <-- zmien na wartosc z `echo $ROS_DOMAIN_ID` na PC
+#define ROS_DOMAIN_ID   0       // <-- zmien na wartosc z `echo $ROS_DOMAIN_ID` na PC
 #endif
 
 // ---------------------------------------------------------------------------
@@ -219,11 +219,8 @@ StaticTask_t  defaultTaskControlBlock;
 
 const osThreadAttr_t defaultTask_attributes = {
     .name       = "defaultTask",
-    .stack_mem  = &defaultTaskBuffer[0],
-    .stack_size = sizeof(defaultTaskBuffer),
-    .cb_mem     = &defaultTaskControlBlock,
-    .cb_size    = sizeof(defaultTaskControlBlock),
-    .priority   = (osPriority_t)osPriorityNormal,
+    .stack_size = 4096,                  /* w BAJTACH dla CMSIS-RTOS v2 - to bedzie 4 kB */
+    .priority   = (osPriority_t) osPriorityNormal,
 };
 osThreadId_t defaultTaskHandle;
 
@@ -394,18 +391,13 @@ void StartDefaultTask(void *argument)
 // ---------------------------------------------------------------------------
 // MX_FREERTOS_Init - wywolywane z main() przed osKernelStart()
 // ---------------------------------------------------------------------------
-void MX_FREERTOS_Init(void)
-{
-    /* Kolejki MUSZA byc utworzone przed startem taskow ktore ich uzywaja.
-     * Powiekszylem dxl_cmd_queue z 10 do 32 - chroni przed gubieniem komend
-     * przy szybkich strumieniach z ros2_control (np. 100 Hz). */
+void MX_FREERTOS_Init(void) {
+    /* DXL: inicjalizacja sprzetu, kolejki, task */
+    DXL_Manager_Init();
     dxl_cmd_queue      = osMessageQueueNew(32, sizeof(DXL_RosCommand_t),  NULL);
     dxl_feedback_queue = osMessageQueueNew(5,  sizeof(DXL_RosFeedback_t), NULL);
-
-    /* Inicjalizacja i start tasku Dynamixel */
-    DXL_Manager_Init();
     osThreadNew(DXL_Manager_Task, NULL, &dxl_task_attr);
 
-    /* Start tasku micro-ROS */
+    /* micro-ROS */
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 }

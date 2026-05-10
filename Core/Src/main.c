@@ -126,9 +126,6 @@ int main(void)
 //  DX64_GetFullState(&test_wheel);
 
   // Sygnalizacja startu (trzy diody)
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, 1);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, 1);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, 1);
   UART4_Print((uint8_t*)"Peripherals OK. Starting RTOS...\n");
 
 
