@@ -24,7 +24,7 @@ osMessageQueueId_t dxl_feedback_queue = NULL;
 
 const osThreadAttr_t dxl_task_attr = {
     .name       = "DXL_Manager",
-    .priority   = (osPriority_t)osPriorityNormal,
+    .priority   = (osPriority_t)osPriorityAboveNormal, /* wyzszy niz micro-ROS, by HAL_UART_Receive nie byl przerywany */
     .stack_size = 2048
 };
 
@@ -45,11 +45,22 @@ void DXL_Manager_Init(void)
     uint8_t wheels[] = {ID_RIGHT_WHEEL, ID_LEFT_WHEEL};
     for (int i = 0; i < 2; i++)
     {
+        /* Status Return Level = 1: silnik odpowiada TYLKO na READ, nie na WRITE.
+         * Bez tego bajty statusu po kazdym WRITE zalegaja w buforze UART i
+         * korumpuja kolejne odczyty (OVR error -> DXL_Read zwraca 0xFFFF). */
+        DXL_WriteByte(&bus, wheels[i], DXL_REG_STATUS_RETURN_LEVEL, 1);
+        HAL_Delay(55); /* zapis EEPROM wymaga min ~55 ms */
+
+        /* Return Delay Time = 1 unit = 2 µs (domyslnie 250 = 500 µs).
+         * Skraca czas oczekiwania na odpowiedz, zmniejsza latencje odczytu. */
+        DXL_WriteByte(&bus, wheels[i], DXL_REG_RETURN_DELAY_TIME, 1);
+        HAL_Delay(55);
+
         DXL_SetWheelMode(&bus, wheels[i]);
-        HAL_Delay(10);
+        HAL_Delay(55); /* CW/CCW_ANGLE_LIMIT rowniez w EEPROM */
         DXL_SetTorque(&bus, wheels[i], true);
         HAL_Delay(10);
-        DXL_SetGoalSpeedRaw(&bus, wheels[i], 0);  // start z prędkością 0
+        DXL_SetGoalSpeedRaw(&bus, wheels[i], 0);
         HAL_Delay(5);
     }
 }
@@ -57,13 +68,12 @@ void DXL_Manager_Init(void)
 // ---------------------------------------------------------------------------
 // DXL_Manager_Task — główna pętla sterowania
 // Częstotliwość pętli: ~50Hz (osDelay(20))
-// Feedback wysyłany co ~100ms (co 5 iteracji)
+// Feedback odczytywany i wysyłany co iterację (~50Hz)
 // ---------------------------------------------------------------------------
 void DXL_Manager_Task(void *argument)
 {
     DXL_RosCommand_t  cmd;
-    DXL_RosFeedback_t feedback;
-    int tick = 0;
+    DXL_RosFeedback_t feedback = {0};
 
     for (;;)
     {
@@ -71,82 +81,64 @@ void DXL_Manager_Task(void *argument)
         while (osMessageQueueGet(dxl_cmd_queue, &cmd, NULL, 0) == osOK)
         {
             /* speed_pct [-100, 100] → raw Dynamixel [0, 1023] + bit kierunku */
-            float abs_pct = (cmd.speed_pct < 0) ? -cmd.speed_pct : cmd.speed_pct;
+            float abs_pct = (cmd.speed_pct < 0.0f) ? -cmd.speed_pct : cmd.speed_pct;
             uint16_t raw_val = (uint16_t)(abs_pct * 10.23f);
             if (raw_val > 1023) raw_val = 1023;
 
             /*
-             * Kierunek obrotu (Dynamixel AX w trybie koła):
-             *   Bit 10 = 0 → CCW (wg zegara od strony osi)
+             * Kierunek obrotu (RX-64 w trybie koła):
+             *   Bit 10 = 0 → CCW
              *   Bit 10 = 1 → CW
              *
              * Prawe koło:  positive speed_pct → CCW → do przodu
-             * Lewe koło:   positive speed_pct → CW  → do przodu (montaż lustrzany!)
-             *              dlatego dla lewego inwertujemy kierunek
+             * Lewe koło:   positive speed_pct → CW  → do przodu (montaż lustrzany)
              */
             if (cmd.id == ID_RIGHT_WHEEL)
             {
-                if (cmd.speed_pct < 0) raw_val |= 0x400;  // CW
-                /* speed_pct >= 0 → CCW (bit 10 = 0, już OK) */
+                if (cmd.speed_pct < 0.0f) raw_val |= 0x400;
             }
             else if (cmd.id == ID_LEFT_WHEEL)
             {
-                if (cmd.speed_pct >= 0) raw_val |= 0x400; // CCW → CW (inwersja)
-                /* speed_pct < 0 → CCW (bit 10 = 0) */
+                if (cmd.speed_pct >= 0.0f) raw_val |= 0x400;
             }
 
             DXL_SetGoalSpeedRaw(&bus, cmd.id, raw_val);
         }
 
-        /* B. Odczyt feedbacku co ~100ms (5 * 20ms) */
-        if (++tick >= 5)
+        /* B. Odczyt feedbacku — jeden blokowy pakiet na silnik (6 bajtow danych).
+         *    Zastepuje 3 osobne DXL_Read16, skracajac czas RS-485 z ~11ms do ~4ms.
+         *    Przy bledzie odczytu zachowujemy ostatnie poprawne wartosci. */
         {
-            tick = 0;
-
-            /*
-             * Kolejność odczytu: RIGHT najpierw (indeks 0), LEFT drugi (indeks 3)
-             * Pasuje do DXL_RosFeedback_t.data[] layout opisanego w nagłówku
-             */
-            uint8_t ids[]    = {ID_RIGHT_WHEEL, ID_LEFT_WHEEL};
-            int     offsets[] = {0, 3};
+            static const uint8_t ids[]     = {ID_RIGHT_WHEEL, ID_LEFT_WHEEL};
+            static const int     offsets[] = {0, 3};
 
             for (int i = 0; i < 2; i++)
             {
-                uint8_t  id     = ids[i];
-                int      offset = offsets[i];
+                uint16_t p, v, l;
+                if (!DXL_ReadPresentState(&bus, ids[i], &p, &v, &l))
+                    continue; /* blad: nie nadpisuj starych wartosci */
 
-                uint16_t p = DXL_Read16(&bus, id, DXL_REG_PRESENT_POSITION);
-                uint16_t v = DXL_Read16(&bus, id, DXL_REG_PRESENT_SPEED);
-                uint16_t l = DXL_Read16(&bus, id, DXL_REG_PRESENT_LOAD);
+                int off = offsets[i];
 
-                /* Pozycja: 0-1023 jednostki → 0-300 stopni (AX: 1 unit = 0.293°) */
-                feedback.data[offset] = (float)p * 0.293f;
+                /* Pozycja: 0-1023 jednostek → 0-300° (RX-64: 1 unit = 0.293°) */
+                feedback.data[off] = (float)p * 0.293f;
 
-                /* Prędkość: bit 10 = kierunek (0=CCW, 1=CW)
-                 * Zwracamy signed: + = CCW (do przodu dla prawego koła)
-                 *                  - = CW
-                 * app_freertos.c przelicza na rad/s przez DXL_UNIT_TO_RAD_S
-                 */
-                if (v > 1023)
-                    feedback.data[offset + 1] = -(float)(v - 1024); // CW = ujemna
-                else
-                    feedback.data[offset + 1] =  (float)v;          // CCW = dodatnia
+                /* Predkosc: bit 10 = kierunek (0=CCW +, 1=CW -) */
+                feedback.data[off + 1] = (v > 1023) ? -(float)(v - 1024)
+                                                     :  (float)v;
 
-                /* Load: bit 10 = kierunek, 0-1023 = wartość
-                 * Zwracamy signed % */
-                if (l > 1023)
-                    feedback.data[offset + 2] = -(float)(l - 1024) / 10.23f;
-                else
-                    feedback.data[offset + 2] =  (float)l / 10.23f;
+                /* Obciazenie: bit 10 = kierunek, wartosc 0-1023 -> % */
+                feedback.data[off + 2] = (l > 1023) ? -(float)(l - 1024) / 10.23f
+                                                     :  (float)l           / 10.23f;
             }
 
-            /* Wstaw do kolejki (nadpisz stare dane jeśli pełna) */
+            /* Nadpisz stare dane i wstaw nowe */
             if (osMessageQueueGetCount(dxl_feedback_queue) > 0)
                 osMessageQueueReset(dxl_feedback_queue);
 
             osMessageQueuePut(dxl_feedback_queue, &feedback, 0, 0);
         }
 
-        osDelay(20);  // ~50 Hz pętla sterowania
+        osDelay(20);  /* ~50 Hz */
     }
 }

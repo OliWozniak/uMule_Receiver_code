@@ -48,7 +48,7 @@
 #define MAX_RPM              114.0f
 #define RPM_TO_RAD_S         (2.0f * 3.14159265f / 60.0f)
 #define MAX_WHEEL_RAD_S      (MAX_RPM * RPM_TO_RAD_S)   // ~11.94 rad/s
-#define DXL_UNIT_TO_RAD_S   (0.111f * RPM_TO_RAD_S)     // 1 unit AX = 0.111 RPM -> rad/s
+#define DXL_UNIT_TO_RAD_S   (0.111f * RPM_TO_RAD_S)     // 1 unit RX-64 = 0.111 RPM -> rad/s
 #define DEG_TO_RAD           (3.14159265f / 180.0f)
 
 static inline float clamp(float v, float lo, float hi) {
@@ -203,23 +203,18 @@ static volatile uint32_t soft_error_count = 0;
 }
 
 // ---------------------------------------------------------------------------
-// Watek micro-ROS
-// Stack 4096 slow (16 kB) - z naddatkiem dla JointState i sesji XRCE-DDS.
-// Wczesniej 8000 slow bylo przewymiarowane; 4096 zostawia zapas heap dla micro-ROS.
-//
-// UWAGA: uzywamy StaticTask_t (typ FreeRTOS), a nie osStaticThreadDef_t.
-// `osStaticThreadDef_t` to alias dodany dopiero w nowszych wersjach
-// cmsis_os2.h (typedef StaticTask_t osStaticThreadDef_t). W starszych
-// build'ach CMSIS-RTOS V2 ten alias nie istnieje, ale StaticTask_t jest
-// zawsze gdy configSUPPORT_STATIC_ALLOCATION == 1.
-// cmsis_os2.c i tak rzutuje cb_mem na (StaticTask_t *) wewnatrz osThreadNew.
+// Watek micro-ROS — statyczna alokacja stosu i TCB.
+// Stack 3000 slow = 12000 bajtow: wystarczajacy dla JointState i sesji XRCE-DDS.
 // ---------------------------------------------------------------------------
-uint32_t      defaultTaskBuffer[3000];
-StaticTask_t  defaultTaskControlBlock;
+static uint32_t      defaultTaskBuffer[3000];
+static StaticTask_t  defaultTaskControlBlock;
 
 const osThreadAttr_t defaultTask_attributes = {
     .name       = "defaultTask",
-    .stack_size = 4096,                  /* w BAJTACH dla CMSIS-RTOS v2 - to bedzie 4 kB */
+    .cb_mem     = &defaultTaskControlBlock,
+    .cb_size    = sizeof(defaultTaskControlBlock),
+    .stack_mem  = defaultTaskBuffer,
+    .stack_size = sizeof(defaultTaskBuffer),  /* 12000 B = 3000 slow */
     .priority   = (osPriority_t) osPriorityNormal,
 };
 osThreadId_t defaultTaskHandle;
@@ -317,7 +312,7 @@ void StartDefaultTask(void *argument)
 
     /* 9. Petla glowna */
     DXL_RosFeedback_t feedback;
-    uint32_t last_pub_tick = 0;
+    uint32_t last_pub_tick  = 0;
     uint32_t last_ping_tick = 0;
 
     for (;;)
@@ -325,51 +320,47 @@ void StartDefaultTask(void *argument)
         /* Obsluga subskrypcji - timeout 0 = nieblokujace */
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(0));
 
+        /* Pobierz najnowszy feedback jesli dostepny (nie blokuje) */
+        osMessageQueueGet(dxl_feedback_queue, &feedback, NULL, 0);
+
         uint32_t now = osKernelGetTickCount();
 
-        /* Publikacja /wheel_states co 100 ms */
-        if ((now - last_pub_tick) >= 100)
+        /* Publikacja /wheel_states co 20 ms (~50 Hz).
+         * Publikujemy zawsze (z ostatnimi poprawnymi wartosciami),
+         * nie tylko gdy kolejka miala nowe dane — ros2_control wymaga
+         * regularnego strumienia stanu, brak wiadomosci zatrzymuje kontroler.
+         *
+         * Dane z dxl_control.c (DXL_RosFeedback_t.data[]):
+         *   [0] = RIGHT position (stopnie), [1] = RIGHT velocity (DXL raw signed)
+         *   [2] = RIGHT load (%),           [3] = LEFT  position (stopnie)
+         *   [4] = LEFT  velocity (DXL raw), [5] = LEFT  load (%)
+         *
+         * JointState: indeks [0] = left, [1] = right
+         */
+        if ((now - last_pub_tick) >= 20)
         {
             last_pub_tick = now;
 
-            if (osMessageQueueGet(dxl_feedback_queue, &feedback, NULL, 0) == osOK)
-            {
-                /*
-                 * Dane z dxl_control.c (DXL_RosFeedback_t.data[]):
-                 * [0] = RIGHT position (stopnie)
-                 * [1] = RIGHT velocity (DXL raw, signed: + = CCW, - = CW)
-                 * [2] = RIGHT load (%)
-                 * [3] = LEFT  position (stopnie)
-                 * [4] = LEFT  velocity (DXL raw, signed)
-                 * [5] = LEFT  load (%)
-                 *
-                 * JointState: indeks [0] = left, [1] = right
-                 *
-                 * UWAGA: kola sa zamontowane lustrzanie (xacro: rpy +/-pi/2,
-                 * axis z = +/-1). Jesli okaze sie ze odom liczy zly kierunek,
-                 * dodaj minus przy state_velocity[1] i state_position[1] (lub [0]).
-                 */
+            /* Predkosc: DXL units -> rad/s
+             * Lewe kolo: montaz lustrzany — fizyczny CW (do przodu) = ujemna
+             * wartosc DXL, ale w ukladzie robota to ruch do przodu = wartosc dodatnia.
+             * Negujemy predkosc i obciazenie lewego kola w feedbacku. */
+            state_velocity[0] = -(double)(feedback.data[4] * DXL_UNIT_TO_RAD_S); /* left  */
+            state_velocity[1] =  (double)(feedback.data[1] * DXL_UNIT_TO_RAD_S); /* right */
 
-                /* Predkosc: DXL units -> rad/s */
-                state_velocity[0] = (double)(feedback.data[4] * DXL_UNIT_TO_RAD_S); /* left  */
-                state_velocity[1] = (double)(feedback.data[1] * DXL_UNIT_TO_RAD_S); /* right */
+            /* Pozycja: stopnie -> rad — bez negacji (wartosc kata walu, niezalezna od kierunku) */
+            state_position[0] = (double)(feedback.data[3] * DEG_TO_RAD); /* left  */
+            state_position[1] = (double)(feedback.data[0] * DEG_TO_RAD); /* right */
 
-                /* Pozycja: stopnie -> rad */
-                state_position[0] = (double)(feedback.data[3] * DEG_TO_RAD); /* left  */
-                state_position[1] = (double)(feedback.data[0] * DEG_TO_RAD); /* right */
+            /* Effort: load % — negowany razem z predkoscia (znak = kierunek sily) */
+            state_effort[0] = -(double)feedback.data[5]; /* left  */
+            state_effort[1] =  (double)feedback.data[2]; /* right */
 
-                /* Effort: load % */
-                state_effort[0] = (double)feedback.data[5]; /* left  */
-                state_effort[1] = (double)feedback.data[2]; /* right */
+            int64_t time_ns = rmw_uros_epoch_nanos();
+            wheel_state_msg.header.stamp.sec     = (int32_t)(time_ns / 1000000000LL);
+            wheel_state_msg.header.stamp.nanosec = (uint32_t)(time_ns % 1000000000LL);
 
-                /* Timestamp - jesli sync sie udal, bedzie sensowny;
-                 * jesli nie, bedzie 0 (i to tez jest OK dla ros2_control). */
-                int64_t time_ns = rmw_uros_epoch_nanos();
-                wheel_state_msg.header.stamp.sec     = (int32_t)(time_ns / 1000000000LL);
-                wheel_state_msg.header.stamp.nanosec = (uint32_t)(time_ns % 1000000000LL);
-
-                RCSOFTCHECK(rcl_publish(&wheel_pub, &wheel_state_msg, NULL));
-            }
+            RCSOFTCHECK(rcl_publish(&wheel_pub, &wheel_state_msg, NULL));
         }
 
         /* Ping agenta co 2 s - wykrywa zerwane polaczenie. Przy braku agenta

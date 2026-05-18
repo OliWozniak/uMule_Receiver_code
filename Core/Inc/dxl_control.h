@@ -6,8 +6,8 @@
 #include "usart.h"
 
 // Konfiguracja fizyczna robota
-#define ID_RIGHT_WHEEL    1
-#define ID_LEFT_WHEEL     3
+#define ID_RIGHT_WHEEL    3
+#define ID_LEFT_WHEEL     1
 
 typedef struct {
     uint8_t id;

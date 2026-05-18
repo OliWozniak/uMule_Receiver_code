@@ -22,6 +22,20 @@ static void DXL_SendPacket(DXL_Port_t* port, uint8_t id, uint8_t inst, uint8_t* 
     HAL_UART_Transmit(port->huart, packet, length + 4, 50);
     while(__HAL_UART_GET_FLAG(port->huart, UART_FLAG_TC) == RESET);
     HAL_GPIO_WritePin(port->dir_port, port->dir_pin, GPIO_PIN_RESET);
+
+    /* Flush ech i zalegajacych bajtow statusu z poprzednich operacji.
+     * Bez tego DXL_Read16 czyta stale bajty zamiast odpowiedzi silnika. */
+    __HAL_UART_CLEAR_FLAG(port->huart, UART_CLEAR_OREF | UART_CLEAR_NEF |
+                                       UART_CLEAR_PEF  | UART_CLEAR_FEF);
+    while (__HAL_UART_GET_FLAG(port->huart, UART_FLAG_RXNE)) {
+        volatile uint32_t dummy = port->huart->Instance->RDR;
+        (void)dummy;
+    }
+}
+
+void DXL_WriteByte(DXL_Port_t* port, uint8_t id, uint8_t reg, uint8_t val) {
+    uint8_t params[2] = { reg, val };
+    DXL_SendPacket(port, id, DXL_INST_WRITE, params, 2);
 }
 
 void DXL_Write16(DXL_Port_t* port, uint8_t id, uint8_t reg, uint16_t val) {
@@ -52,4 +66,25 @@ void DXL_SetWheelMode(DXL_Port_t* port, uint8_t id) {
 
 void DXL_SetGoalSpeedRaw(DXL_Port_t* port, uint8_t id, uint16_t raw_speed) {
     DXL_Write16(port, id, DXL_REG_MOVING_SPEED, raw_speed);
+}
+
+bool DXL_ReadPresentState(DXL_Port_t* port, uint8_t id,
+                           uint16_t *position, uint16_t *speed, uint16_t *load)
+{
+    /* Jeden pakiet READ: start=0x24, dlugosc=6 -> odczytuje position(2)+speed(2)+load(2).
+     * Odpowiedz: 0xFF 0xFF ID 8 error pos_L pos_H spd_L spd_H load_L load_H checksum = 12B */
+    uint8_t params[2] = { DXL_REG_PRESENT_POSITION, 0x06 };
+    DXL_SendPacket(port, id, DXL_INST_READ, params, 2);
+
+    uint8_t res[12] = {0};
+    if (HAL_UART_Receive(port->huart, res, sizeof(res), 10) != HAL_OK)
+        return false;
+
+    if (res[0] != 0xFF || res[1] != 0xFF || res[2] != id || res[4] != 0x00)
+        return false;
+
+    *position = (uint16_t)(res[5]  | (res[6]  << 8));
+    *speed    = (uint16_t)(res[7]  | (res[8]  << 8));
+    *load     = (uint16_t)(res[9]  | (res[10] << 8));
+    return true;
 }
