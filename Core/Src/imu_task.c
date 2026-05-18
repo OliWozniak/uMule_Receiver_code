@@ -15,20 +15,26 @@ void IMU_Manager_Init(void)
     /* HAL_I2C_IsDeviceReady: wyslij START + adres + odbierz ACK/NACK.
      * Trzy probki, timeout 100ms. Wynik w imu_dbg.lsm6_ready / lis3_ready:
      *   HAL_OK      (0) = sensor odpowiada pod tym adresem
-     *   HAL_ERROR   (1) = NACK (zly adres, brak zasilania, konflikT pinow)
+     *   HAL_ERROR   (1) = NACK (zly adres, brak zasilania, konflikt pinow)
      *   HAL_TIMEOUT (3) = brak odpowiedzi (bus stuck, brak pull-upow)
+     *
+     * Uzywamy adresow z naglowkow ST:
+     *   LSM6DS3TR_C_I2C_ADD_L = 0xD5  (SDO=GND, 7-bit 0x6A)
+     *   LIS3MDL_I2C_ADD_L     = 0x39  (SA1=GND, 7-bit 0x1C)
+     * HAL ignoruje bit LSB adresu (R/W), wiec mozna uzyc wprost.
      */
-    imu_dbg.lsm6_ready = HAL_I2C_IsDeviceReady(&hi2c4, LSM6DS3_ADDR << 1, 3, 100);
-    imu_dbg.lis3_ready  = HAL_I2C_IsDeviceReady(&hi2c4, LIS3MDL_ADDR << 1, 3, 100);
+    imu_dbg.lsm6_ready = HAL_I2C_IsDeviceReady(&hi2c4, LSM6DS3TR_C_I2C_ADD_L, 3, 100);
+    imu_dbg.lis3_ready  = HAL_I2C_IsDeviceReady(&hi2c4, LIS3MDL_I2C_ADD_L,     3, 100);
 
-    /* WHO_AM_I — tylko jesli sensor odpowiada */
+    /* WHO_AM_I — tylko jesli sensor odpowiada.
+     * LSM6DS3TR_C_ID = 0x6A, LIS3MDL_ID = 0x3D */
     if (imu_dbg.lsm6_ready == HAL_OK)
-        HAL_I2C_Mem_Read(&hi2c4, LSM6DS3_ADDR << 1, 0x0F,
-                         I2C_MEMADD_SIZE_8BIT, &imu_dbg.lsm6_who_am_i, 1, 100);
+        HAL_I2C_Mem_Read(&hi2c4, LSM6DS3TR_C_I2C_ADD_L, LSM6DS3TR_C_WHO_AM_I,
+                         I2C_MEMADD_SIZE_8BIT, (uint8_t *)&imu_dbg.lsm6_who_am_i, 1, 100);
 
     if (imu_dbg.lis3_ready == HAL_OK)
-        HAL_I2C_Mem_Read(&hi2c4, LIS3MDL_ADDR << 1, 0x0F,
-                         I2C_MEMADD_SIZE_8BIT, &imu_dbg.lis3_who_am_i, 1, 100);
+        HAL_I2C_Mem_Read(&hi2c4, LIS3MDL_I2C_ADD_L, LIS3MDL_WHO_AM_I,
+                         I2C_MEMADD_SIZE_8BIT, (uint8_t *)&imu_dbg.lis3_who_am_i, 1, 100);
 
     imu_dbg.init_ok = IMU_Init(&hi2c4);
 }

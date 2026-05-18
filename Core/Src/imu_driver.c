@@ -1,77 +1,168 @@
+/**
+ * @file    imu_driver.c
+ * @brief   IMU hardware abstraction using official ST MEMS C drivers.
+ *
+ * Platform adapter functions wrap HAL_I2C_Mem_Write/Read.
+ * Each sensor has its own stmdev_ctx_t with the correct I2C address.
+ *
+ * Sensors:
+ *   LSM6DS3TR-C  — accelerometer + gyroscope (I2C4, ADD_L: SDO=GND)
+ *   LIS3MDL      — magnetometer              (I2C4, ADD_L: SA1=GND)
+ */
+
 #include "imu_driver.h"
 
-static HAL_StatusTypeDef i2c_write_reg(I2C_HandleTypeDef *hi2c,
-                                        uint8_t addr7, uint8_t reg, uint8_t val)
+/* --------------------------------------------------------------------------
+ * Platform adapter functions
+ * Signature must match stmdev_write_ptr / stmdev_read_ptr:
+ *   int32_t fn(void *handle, uint8_t reg, [const] uint8_t *buf, uint16_t len)
+ * Return 0 on success, non-zero on error.
+ * -------------------------------------------------------------------------- */
+
+static int32_t lsm6_write(void *handle, uint8_t reg,
+                           const uint8_t *buf, uint16_t len)
 {
-    return HAL_I2C_Mem_Write(hi2c, (uint16_t)(addr7 << 1),
-                             reg, I2C_MEMADD_SIZE_8BIT, &val, 1, 10);
+    HAL_StatusTypeDef s = HAL_I2C_Mem_Write(
+        (I2C_HandleTypeDef *)handle,
+        LSM6DS3TR_C_I2C_ADD_L,          /* 8-bit address (HAL ignores LSB) */
+        reg, I2C_MEMADD_SIZE_8BIT,
+        (uint8_t *)buf, len, 10);
+    return (s == HAL_OK) ? 0 : -1;
 }
 
-static HAL_StatusTypeDef i2c_read_regs(I2C_HandleTypeDef *hi2c,
-                                        uint8_t addr7, uint8_t reg,
-                                        uint8_t *buf, uint8_t len)
+static int32_t lsm6_read(void *handle, uint8_t reg,
+                          uint8_t *buf, uint16_t len)
 {
-    return HAL_I2C_Mem_Read(hi2c, (uint16_t)(addr7 << 1),
-                            reg, I2C_MEMADD_SIZE_8BIT, buf, len, 10);
+    HAL_StatusTypeDef s = HAL_I2C_Mem_Read(
+        (I2C_HandleTypeDef *)handle,
+        LSM6DS3TR_C_I2C_ADD_L,
+        reg, I2C_MEMADD_SIZE_8BIT,
+        buf, len, 10);
+    return (s == HAL_OK) ? 0 : -1;
 }
 
-// ---------------------------------------------------------------------------
+static int32_t lis3_write(void *handle, uint8_t reg,
+                           const uint8_t *buf, uint16_t len)
+{
+    HAL_StatusTypeDef s = HAL_I2C_Mem_Write(
+        (I2C_HandleTypeDef *)handle,
+        LIS3MDL_I2C_ADD_L,
+        reg, I2C_MEMADD_SIZE_8BIT,
+        (uint8_t *)buf, len, 10);
+    return (s == HAL_OK) ? 0 : -1;
+}
+
+static int32_t lis3_read(void *handle, uint8_t reg,
+                          uint8_t *buf, uint16_t len)
+{
+    HAL_StatusTypeDef s = HAL_I2C_Mem_Read(
+        (I2C_HandleTypeDef *)handle,
+        LIS3MDL_I2C_ADD_L,
+        reg, I2C_MEMADD_SIZE_8BIT,
+        buf, len, 10);
+    return (s == HAL_OK) ? 0 : -1;
+}
+
+/* --------------------------------------------------------------------------
+ * Static contexts — initialised once in IMU_Init()
+ * -------------------------------------------------------------------------- */
+static stmdev_ctx_t lsm6_ctx;
+static stmdev_ctx_t lis3_ctx;
+static bool         ctx_ready = false;
+
+static void ctx_init(I2C_HandleTypeDef *hi2c)
+{
+    lsm6_ctx.write_reg = lsm6_write;
+    lsm6_ctx.read_reg  = lsm6_read;
+    lsm6_ctx.mdelay    = NULL;
+    lsm6_ctx.handle    = hi2c;
+
+    lis3_ctx.write_reg = lis3_write;
+    lis3_ctx.read_reg  = lis3_read;
+    lis3_ctx.mdelay    = NULL;
+    lis3_ctx.handle    = hi2c;
+
+    ctx_ready = true;
+}
+
+/* --------------------------------------------------------------------------
+ * IMU_Init
+ * -------------------------------------------------------------------------- */
 bool IMU_Init(I2C_HandleTypeDef *hi2c)
 {
-    /* --- LSM6DS3TR-C ---
-     * CTRL3_C  0x44: BDU=1 (blok danych), IF_INC=1 (auto-increment adresu)
-     * CTRL1_XL 0x4C: ODR=104 Hz (0100), FS=±8g (11)
-     * CTRL2_G  0x4C: ODR=104 Hz (0100), FS=±2000 dps (11)
-     */
-    if (i2c_write_reg(hi2c, LSM6DS3_ADDR, LSM6_CTRL3_C,  0x44) != HAL_OK) return false;
-    if (i2c_write_reg(hi2c, LSM6DS3_ADDR, LSM6_CTRL1_XL, 0x4C) != HAL_OK) return false;
-    if (i2c_write_reg(hi2c, LSM6DS3_ADDR, LSM6_CTRL2_G,  0x4C) != HAL_OK) return false;
+    uint8_t id;
+    bool ok = true;
 
-    /* --- LIS3MDL ---
-     * CTRL_REG1 0x70: OM=ultra (11), DO=10 Hz (100)
-     * CTRL_REG2 0x00: FS=±4 gauss
-     * CTRL_REG3 0x00: MD=continuous
-     * CTRL_REG4 0x0C: OMZ=ultra (11)
-     * CTRL_REG5 0x40: BDU=1
-     */
-    if (i2c_write_reg(hi2c, LIS3MDL_ADDR, LIS3_CTRL_REG1, 0x70) != HAL_OK) return false;
-    if (i2c_write_reg(hi2c, LIS3MDL_ADDR, LIS3_CTRL_REG2, 0x00) != HAL_OK) return false;
-    if (i2c_write_reg(hi2c, LIS3MDL_ADDR, LIS3_CTRL_REG3, 0x00) != HAL_OK) return false;
-    if (i2c_write_reg(hi2c, LIS3MDL_ADDR, LIS3_CTRL_REG4, 0x0C) != HAL_OK) return false;
-    if (i2c_write_reg(hi2c, LIS3MDL_ADDR, LIS3_CTRL_REG5, 0x40) != HAL_OK) return false;
+    ctx_init(hi2c);
 
-    return true;
+    /* --- LSM6DS3TR-C ------------------------------------------------------- */
+    /* Verify WHO_AM_I */
+    lsm6ds3tr_c_device_id_get(&lsm6_ctx, &id);
+    if (id != LSM6DS3TR_C_ID) ok = false;
+
+    /* Block data update — output registers not updated until both MSB/LSB read */
+    lsm6ds3tr_c_block_data_update_set(&lsm6_ctx, PROPERTY_ENABLE);
+
+    /* Full scale: ±8 g, ±2000 dps */
+    lsm6ds3tr_c_xl_full_scale_set(&lsm6_ctx, LSM6DS3TR_C_8g);
+    lsm6ds3tr_c_gy_full_scale_set(&lsm6_ctx, LSM6DS3TR_C_2000dps);
+
+    /* Output data rate: 104 Hz */
+    lsm6ds3tr_c_xl_data_rate_set(&lsm6_ctx, LSM6DS3TR_C_XL_ODR_104Hz);
+    lsm6ds3tr_c_gy_data_rate_set(&lsm6_ctx, LSM6DS3TR_C_GY_ODR_104Hz);
+
+    /* --- LIS3MDL ----------------------------------------------------------- */
+    lis3mdl_device_id_get(&lis3_ctx, &id);
+    if (id != LIS3MDL_ID) ok = false;
+
+    lis3mdl_block_data_update_set(&lis3_ctx, PROPERTY_ENABLE);
+
+    /* Full scale ±4 gauss */
+    lis3mdl_full_scale_set(&lis3_ctx, LIS3MDL_4_GAUSS);
+
+    /* Data rate: HP_10Hz (high-performance 10 Hz) */
+    lis3mdl_data_rate_set(&lis3_ctx, LIS3MDL_HP_10Hz);
+
+    /* Continuous conversion mode */
+    lis3mdl_operating_mode_set(&lis3_ctx, LIS3MDL_CONTINUOUS_MODE);
+
+    return ok;
 }
 
-// ---------------------------------------------------------------------------
+/* --------------------------------------------------------------------------
+ * IMU_Read
+ * -------------------------------------------------------------------------- */
 bool IMU_Read(I2C_HandleTypeDef *hi2c, IMU_Data_t *data)
 {
-    uint8_t buf[6];
+    int16_t raw[3];
     bool ok = false;
 
-    /* Gyro: 6 bajtow od OUTX_L_G.
-     * IF_INC aktywny (ustawiony w CTRL3_C) — adres bez MSB. */
-    if (i2c_read_regs(hi2c, LSM6DS3_ADDR, LSM6_OUTX_L_G, buf, 6) == HAL_OK) {
-        data->gyro_x = (float)(int16_t)(buf[0] | (buf[1] << 8)) * LSM6_GYRO_SENS_RAD_S;
-        data->gyro_y = (float)(int16_t)(buf[2] | (buf[3] << 8)) * LSM6_GYRO_SENS_RAD_S;
-        data->gyro_z = (float)(int16_t)(buf[4] | (buf[5] << 8)) * LSM6_GYRO_SENS_RAD_S;
+    /* Re-attach handle in case hi2c changed (defensive). */
+    if (!ctx_ready) ctx_init(hi2c);
+    lsm6_ctx.handle = hi2c;
+    lis3_ctx.handle = hi2c;
+
+    /* Gyroscope */
+    if (lsm6ds3tr_c_angular_rate_raw_get(&lsm6_ctx, raw) == 0) {
+        data->gyro_x = (float)raw[0] * LSM6_GYRO_SENS_RAD_S;
+        data->gyro_y = (float)raw[1] * LSM6_GYRO_SENS_RAD_S;
+        data->gyro_z = (float)raw[2] * LSM6_GYRO_SENS_RAD_S;
         ok = true;
     }
 
-    /* Accel: 6 bajtow od OUTX_L_XL. */
-    if (i2c_read_regs(hi2c, LSM6DS3_ADDR, LSM6_OUTX_L_XL, buf, 6) == HAL_OK) {
-        data->accel_x = (float)(int16_t)(buf[0] | (buf[1] << 8)) * LSM6_ACCEL_SENS_MS2;
-        data->accel_y = (float)(int16_t)(buf[2] | (buf[3] << 8)) * LSM6_ACCEL_SENS_MS2;
-        data->accel_z = (float)(int16_t)(buf[4] | (buf[5] << 8)) * LSM6_ACCEL_SENS_MS2;
+    /* Accelerometer */
+    if (lsm6ds3tr_c_acceleration_raw_get(&lsm6_ctx, raw) == 0) {
+        data->accel_x = (float)raw[0] * LSM6_ACCEL_SENS_MS2;
+        data->accel_y = (float)raw[1] * LSM6_ACCEL_SENS_MS2;
+        data->accel_z = (float)raw[2] * LSM6_ACCEL_SENS_MS2;
         ok = true;
     }
 
-    /* Mag: LIS3MDL wymaga MSB=1 w adresie rejestru dla odczytu multi-bajtowego w I2C.
-     * HAL_I2C_Mem_Read wysyla adres rejestru jako 1 bajt — ustawiamy bit 7. */
-    if (i2c_read_regs(hi2c, LIS3MDL_ADDR, LIS3_OUT_X_L | 0x80, buf, 6) == HAL_OK) {
-        data->mag_x = (float)(int16_t)(buf[0] | (buf[1] << 8)) * LIS3_MAG_SENS_T;
-        data->mag_y = (float)(int16_t)(buf[2] | (buf[3] << 8)) * LIS3_MAG_SENS_T;
-        data->mag_z = (float)(int16_t)(buf[4] | (buf[5] << 8)) * LIS3_MAG_SENS_T;
+    /* Magnetometer */
+    if (lis3mdl_magnetic_raw_get(&lis3_ctx, raw) == 0) {
+        data->mag_x = (float)raw[0] * LIS3_MAG_SENS_T;
+        data->mag_y = (float)raw[1] * LIS3_MAG_SENS_T;
+        data->mag_z = (float)raw[2] * LIS3_MAG_SENS_T;
         ok = true;
     }
 

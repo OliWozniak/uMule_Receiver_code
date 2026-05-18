@@ -1,8 +1,8 @@
 /* ina219_driver.h
  *
- * Abstrakcja sprzetu czujnika pradu/napiecia INA219AxD
- * Interfejs: I2C3
- * Adres I2C (7-bit): 0x40 (A0=A1=GND, domyslny)
+ * Abstrakcja sprzetu czujnika pradu/napiecia INA219AxD.
+ * Implementacja oparta na sterowniku ina219_reg (styl ST MEMS / stmdev_ctx_t).
+ * Interfejs: I2C3, adres A0=A1=GND (domyslny).
  *
  * Na tej samej magistrali I2C3 znajduje sie rowniez:
  *   FRAM MB85RC  adres 0x50  — bez implementacji funkcjonalnej
@@ -15,29 +15,21 @@
 #include "i2c.h"
 #include <stdbool.h>
 
-/* --- Adres I2C (7-bit) --- */
-#define INA219_ADDR             0x40
+#include "ina219_reg.h"
 
-/* --- Rejestry --- */
-#define INA219_REG_CONFIG       0x00
-#define INA219_REG_SHUNT_V      0x01
-#define INA219_REG_BUS_V        0x02
-#define INA219_REG_POWER        0x03
-#define INA219_REG_CURRENT      0x04
-#define INA219_REG_CALIB        0x05
+/* 7-bit I2C address alias — backward-compatible with ina219_task.c probes.
+ * INA219_ADDR << 1 == INA219_I2C_ADD_GND_GND == 0x80 */
+#define INA219_ADDR  (INA219_I2C_ADD_GND_GND >> 1)   /* 0x40 */
 
-/* --- Parametry bocznika (dostosuj do swojego hardware'u) ---
+/* --------------------------------------------------------------------------
+ * Parametry bocznika — dostosuj do hardware'u
+ *   CurrentLSB = MAX_CURRENT_A / 32768
+ *   Cal        = trunc(0.04096 / (CurrentLSB × R_SHUNT_OHM))
  *
- * R_SHUNT   = rezystancja bocznika [Ω]
- * MAX_A     = maksymalny spodziewany prad [A] (wplywa na LSB pradu i kalibracjê)
- *
- * CurrentLSB = MAX_A / 32768
- * Cal        = 0.04096 / (CurrentLSB × R_SHUNT)   [wielkosc bezwymiarowa, uint16]
- *
- * Przy R=0.1 Ω, MAX=3.2 A:
- *   CurrentLSB = 97.66 µA/bit
+ * Przy R=0.1 Ω, I_max=3.2 A:
+ *   CurrentLSB ≈ 97.66 µA/bit
  *   Cal        = 4194
- */
+ * -------------------------------------------------------------------------- */
 #define INA219_R_SHUNT_OHM      0.1f
 #define INA219_MAX_CURRENT_A    3.2f
 #define INA219_CURRENT_LSB      (INA219_MAX_CURRENT_A / 32768.0f)
@@ -49,9 +41,9 @@ typedef struct {
     float power_W;
 } INA219_Data_t;
 
-/* Konfiguruje rejestr Config i Calibration.
+/* Konfiguruje CONFIG i CALIBRATION przez ina219_reg API.
  * Wywolac raz przed pierwszym odczytem.
- * Zwraca false przy bledzie I2C. */
+ * Zwraca false przy bledzie I2C lub niedopasowanym WHO_AM_I. */
 bool INA219_Init(I2C_HandleTypeDef *hi2c);
 
 /* Odczytuje napiecie szyny, prad i moc.
