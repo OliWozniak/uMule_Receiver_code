@@ -27,9 +27,14 @@
 #include <rmw_microros/rmw_microros.h>
 
 #include <sensor_msgs/msg/joint_state.h>
+#include <sensor_msgs/msg/imu.h>
+#include <sensor_msgs/msg/magnetic_field.h>
+#include <std_msgs/msg/float32_multi_array.h>
 
 #include "usart.h"
 #include "dxl_control.h"
+#include "imu_task.h"
+#include "ina219_task.h"
 
 // ---------------------------------------------------------------------------
 // KONFIGURACJA SIECI
@@ -80,6 +85,20 @@ static char                              state_frame_id_buf[32] = "base_link";
 static double                            state_position[2]   = {0.0, 0.0};
 static double                            state_velocity[2]   = {0.0, 0.0};
 static double                            state_effort[2]     = {0.0, 0.0};
+
+/* --- PUBLISHER: /imu (sensor_msgs/Imu — accel + gyro z LSM6DS3TR-C) --- */
+static sensor_msgs__msg__Imu             imu_msg;
+static char                              imu_frame_id_buf[16] = "imu_link";
+
+/* --- PUBLISHER: /mag (sensor_msgs/MagneticField — magnetometr LIS3MDL) ---
+ * sensor_msgs/Imu nie zawiera pola magnetometru, dlatego mag = osobny topic. */
+static sensor_msgs__msg__MagneticField   mag_msg;
+static char                              mag_frame_id_buf[16] = "imu_link";
+
+/* --- PUBLISHER: /power (std_msgs/Float32MultiArray — INA219) ---
+ * data[0]=voltage_V, data[1]=current_A, data[2]=power_W */
+static std_msgs__msg__Float32MultiArray  power_msg;
+static float                             power_data_buf[3]   = {0.0f, 0.0f, 0.0f};
 
 
 // ---------------------------------------------------------------------------
@@ -289,12 +308,55 @@ void StartDefaultTask(void *argument)
         state_frame_id_buf, sizeof(state_frame_id_buf),
         state_position, state_velocity, state_effort);
 
+    /* Inicjalizacja sensor_msgs/Imu.
+     * orientation_covariance[0] = -1 oznacza "orientacja nieznana" (brak fuzji). */
+    memset(&imu_msg, 0, sizeof(imu_msg));
+    imu_msg.header.frame_id.data     = imu_frame_id_buf;
+    imu_msg.header.frame_id.size     = strlen(imu_frame_id_buf);
+    imu_msg.header.frame_id.capacity = sizeof(imu_frame_id_buf);
+    imu_msg.orientation_covariance[0] = -1.0;
+
+    /* Inicjalizacja sensor_msgs/MagneticField */
+    memset(&mag_msg, 0, sizeof(mag_msg));
+    mag_msg.header.frame_id.data     = mag_frame_id_buf;
+    mag_msg.header.frame_id.size     = strlen(mag_frame_id_buf);
+    mag_msg.header.frame_id.capacity = sizeof(mag_frame_id_buf);
+
+    /* Inicjalizacja std_msgs/Float32MultiArray dla INA219 */
+    memset(&power_msg, 0, sizeof(power_msg));
+    power_msg.data.data     = power_data_buf;
+    power_msg.data.size     = 3;
+    power_msg.data.capacity = 3;
+
     /* 6. Publisher /wheel_states */
     rcl_publisher_t wheel_pub;
     RCCHECK(rclc_publisher_init_default(
         &wheel_pub, &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
         "wheel_states"));
+
+    /* Publisher /STM_imu — accel + gyro (LSM6DS3TR-C).
+     * Uzywamy best_effort zamiast default (reliable) — sensor_msgs/Imu jest duzy (~340B)
+     * i przy domyslnych ustawieniach XRCE-DDS temat moze nie pojawiac sie w grafie ROS. */
+    rcl_publisher_t imu_pub;
+    RCCHECK(rclc_publisher_init_best_effort(
+        &imu_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
+        "STM_imu"));
+
+    /* Publisher /STM_mag — magnetometr (LIS3MDL) */
+    rcl_publisher_t mag_pub;
+    RCCHECK(rclc_publisher_init_best_effort(
+        &mag_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField),
+        "STM_mag"));
+
+    /* Publisher /STM_power — napiecie/prad/moc (INA219) */
+    rcl_publisher_t power_pub;
+    RCCHECK(rclc_publisher_init_best_effort(
+        &power_pub, &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
+        "STM_power"));
 
     /* 7. Subscriber /wheel_commands */
     rcl_subscription_t wheel_cmd_sub;
@@ -311,9 +373,13 @@ void StartDefaultTask(void *argument)
         wheel_cmd_callback, ON_NEW_DATA));
 
     /* 9. Petla glowna */
-    DXL_RosFeedback_t feedback;
-    uint32_t last_pub_tick  = 0;
-    uint32_t last_ping_tick = 0;
+    DXL_RosFeedback_t  feedback;
+    IMU_QueueData_t    imu_q    = {0};
+    INA219_QueueData_t ina219_q = {0};
+    uint32_t last_pub_tick   = 0;
+    uint32_t last_imu_tick   = 0;
+    uint32_t last_power_tick = 0;
+    uint32_t last_ping_tick  = 0;
 
     for (;;)
     {
@@ -322,6 +388,8 @@ void StartDefaultTask(void *argument)
 
         /* Pobierz najnowszy feedback jesli dostepny (nie blokuje) */
         osMessageQueueGet(dxl_feedback_queue, &feedback, NULL, 0);
+        osMessageQueueGet(imu_data_queue,     &imu_q,    NULL, 0);
+        osMessageQueueGet(ina219_data_queue,  &ina219_q, NULL, 0);
 
         uint32_t now = osKernelGetTickCount();
 
@@ -363,6 +431,43 @@ void StartDefaultTask(void *argument)
             RCSOFTCHECK(rcl_publish(&wheel_pub, &wheel_state_msg, NULL));
         }
 
+        /* Publikacja /imu + /mag co 20 ms (~50 Hz) */
+        if ((now - last_imu_tick) >= 20)
+        {
+            last_imu_tick = now;
+
+            int64_t ts = rmw_uros_epoch_nanos();
+            int32_t  ts_sec  = (int32_t)(ts / 1000000000LL);
+            uint32_t ts_nsec = (uint32_t)(ts % 1000000000LL);
+
+            imu_msg.header.stamp.sec     = ts_sec;
+            imu_msg.header.stamp.nanosec = ts_nsec;
+            imu_msg.angular_velocity.x   = (double)imu_q.gyro_x;
+            imu_msg.angular_velocity.y   = (double)imu_q.gyro_y;
+            imu_msg.angular_velocity.z   = (double)imu_q.gyro_z;
+            imu_msg.linear_acceleration.x = (double)imu_q.accel_x;
+            imu_msg.linear_acceleration.y = (double)imu_q.accel_y;
+            imu_msg.linear_acceleration.z = (double)imu_q.accel_z;
+            RCSOFTCHECK(rcl_publish(&imu_pub,  &imu_msg, NULL));
+
+            mag_msg.header.stamp.sec     = ts_sec;
+            mag_msg.header.stamp.nanosec = ts_nsec;
+            mag_msg.magnetic_field.x     = (double)imu_q.mag_x;
+            mag_msg.magnetic_field.y     = (double)imu_q.mag_y;
+            mag_msg.magnetic_field.z     = (double)imu_q.mag_z;
+            RCSOFTCHECK(rcl_publish(&mag_pub,  &mag_msg, NULL));
+        }
+
+        /* Publikacja /power co 500 ms (INA219 nie wymaga wysokiej czestotliwosci) */
+        if ((now - last_power_tick) >= 500)
+        {
+            last_power_tick = now;
+            power_data_buf[0] = ina219_q.voltage_V;
+            power_data_buf[1] = ina219_q.current_A;
+            power_data_buf[2] = ina219_q.power_W;
+            RCSOFTCHECK(rcl_publish(&power_pub, &power_msg, NULL));
+        }
+
         /* Ping agenta co 2 s - wykrywa zerwane polaczenie. Przy braku agenta
          * mozna by zrobic reinit, ale na razie tylko sygnalizujemy LED'em. */
         if ((now - last_ping_tick) >= 2000) {
@@ -388,6 +493,16 @@ void MX_FREERTOS_Init(void) {
     dxl_cmd_queue      = osMessageQueueNew(32, sizeof(DXL_RosCommand_t),  NULL);
     dxl_feedback_queue = osMessageQueueNew(5,  sizeof(DXL_RosFeedback_t), NULL);
     osThreadNew(DXL_Manager_Task, NULL, &dxl_task_attr);
+
+    /* IMU (I2C4): LSM6DS3TR-C + LIS3MDL */
+    IMU_Manager_Init();
+    imu_data_queue = osMessageQueueNew(2, sizeof(IMU_QueueData_t), NULL);
+    osThreadNew(IMU_Manager_Task, NULL, &imu_task_attr);
+
+    /* INA219 (I2C3): czujnik pradu */
+    INA219_Manager_Init();
+    ina219_data_queue = osMessageQueueNew(2, sizeof(INA219_QueueData_t), NULL);
+    osThreadNew(INA219_Manager_Task, NULL, &ina219_task_attr);
 
     /* micro-ROS */
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
