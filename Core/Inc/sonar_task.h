@@ -19,16 +19,17 @@
 
 #include "cmsis_os.h"
 #include "sonar_driver.h"
+#include "main.h"
 
 /* ---- Przypisanie pinów TRIG (GPIO Output) -------------------------------- */
-#define SONAR_TRIG0_PORT   GPIOB
-#define SONAR_TRIG0_PIN    GPIO_PIN_6
-#define SONAR_TRIG1_PORT   GPIOB
-#define SONAR_TRIG1_PIN    GPIO_PIN_7
-#define SONAR_TRIG2_PORT   GPIOB
-#define SONAR_TRIG2_PIN    GPIO_PIN_8
-#define SONAR_TRIG3_PORT   GPIOC
-#define SONAR_TRIG3_PIN    GPIO_PIN_14
+#define SONAR_TRIG0_PORT   HC_SR_01_GPIO_Port
+#define SONAR_TRIG0_PIN    HC_SR_01_Pin
+#define SONAR_TRIG1_PORT   HC_SR_02_GPIO_Port
+#define SONAR_TRIG1_PIN    HC_SR_02_Pin
+#define SONAR_TRIG2_PORT   HC_SR_03_GPIO_Port
+#define SONAR_TRIG2_PIN    HC_SR_03_Pin
+#define SONAR_TRIG3_PORT   HC_SR_04_GPIO_Port
+#define SONAR_TRIG3_PIN    HC_SR_04_Pin
 
 /* ---- Przypisanie kanałów ECHO (TIM2 Input Capture) ----------------------- */
 #define SONAR_ECHO0_CHAN   TIM_CHANNEL_1   /* PA0  = TIM2_CH1 (AF1)  */
