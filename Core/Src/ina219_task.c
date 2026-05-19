@@ -6,7 +6,7 @@ osMessageQueueId_t      ina219_data_queue = NULL;
 const osThreadAttr_t ina219_task_attr = {
     .name       = "INA219_Manager",
     .priority   = (osPriority_t)osPriorityNormal,
-    .stack_size = 256
+    .stack_size = 512  /* Cortex-M4 + FPU: kontekst 196 B + HAL I2C ramki; poprzednie 256 B bylo za male */
 };
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ osMessageQueueId_t     sonar_data_queue = NULL;
 const osThreadAttr_t sonar_task_attr = {
     .name       = "Sonar_Manager",
     .priority   = (osPriority_t)osPriorityBelowNormal, /* niżej niż micro-ROS */
-    .stack_size = 384,
+    .stack_size = 1024, /* Cortex-M4 + FPU: sam kontekst = 196 B, poprzednie 384 B było za małe */
 };
 
 /* Deskryptory sprzętu — muszą być spójne z sonar_task.h */

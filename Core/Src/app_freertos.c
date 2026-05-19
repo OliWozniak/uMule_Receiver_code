@@ -358,21 +358,17 @@ void StartDefaultTask(void *argument)
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
         "wheel_states"));
 
-    /* Publisher /STM_imu — accel + gyro (LSM6DS3TR-C).
-     * Uzywamy best_effort zamiast default (reliable) — sensor_msgs/Imu jest duzy (~340B)
-     * i przy domyslnych ustawieniach XRCE-DDS temat moze nie pojawiac sie w grafie ROS. */
+    /* Publisher /STM_imu (sensor_msgs/Imu — accel + gyro z LSM6DS3TR-C) */
     rcl_publisher_t imu_pub;
     RCCHECK(rclc_publisher_init_best_effort(
         &imu_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-        "STM_imu"));
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu), "STM_imu"));
 
-    /* Publisher /STM_mag — magnetometr (LIS3MDL) */
+    /* Publisher /STM_mag (sensor_msgs/MagneticField — magnetometr LIS3MDL) */
     rcl_publisher_t mag_pub;
     RCCHECK(rclc_publisher_init_best_effort(
         &mag_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField),
-        "STM_mag"));
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField), "STM_mag"));
 
     /* Publisher /STM_power — napiecie/prad/moc (INA219) */
     rcl_publisher_t power_pub;
@@ -471,31 +467,30 @@ void StartDefaultTask(void *argument)
             RCSOFTCHECK(rcl_publish(&wheel_pub, &wheel_state_msg, NULL));
         }
 
-        /* Publikacja /imu + /mag co 20 ms (~50 Hz) */
+        /* Publikacja /STM_imu + /STM_mag co 20 ms (~50 Hz) */
         if ((now - last_imu_tick) >= 20)
         {
             last_imu_tick = now;
-
             int64_t ts = rmw_uros_epoch_nanos();
             int32_t  ts_sec  = (int32_t)(ts / 1000000000LL);
             uint32_t ts_nsec = (uint32_t)(ts % 1000000000LL);
 
-            imu_msg.header.stamp.sec     = ts_sec;
-            imu_msg.header.stamp.nanosec = ts_nsec;
-            imu_msg.angular_velocity.x   = (double)imu_q.gyro_x;
-            imu_msg.angular_velocity.y   = (double)imu_q.gyro_y;
-            imu_msg.angular_velocity.z   = (double)imu_q.gyro_z;
+            imu_msg.header.stamp.sec      = ts_sec;
+            imu_msg.header.stamp.nanosec  = ts_nsec;
+            imu_msg.angular_velocity.x    = (double)imu_q.gyro_x;
+            imu_msg.angular_velocity.y    = (double)imu_q.gyro_y;
+            imu_msg.angular_velocity.z    = (double)imu_q.gyro_z;
             imu_msg.linear_acceleration.x = (double)imu_q.accel_x;
             imu_msg.linear_acceleration.y = (double)imu_q.accel_y;
             imu_msg.linear_acceleration.z = (double)imu_q.accel_z;
-            RCSOFTCHECK(rcl_publish(&imu_pub,  &imu_msg, NULL));
+            RCSOFTCHECK(rcl_publish(&imu_pub, &imu_msg, NULL));
 
             mag_msg.header.stamp.sec     = ts_sec;
             mag_msg.header.stamp.nanosec = ts_nsec;
             mag_msg.magnetic_field.x     = (double)imu_q.mag_x;
             mag_msg.magnetic_field.y     = (double)imu_q.mag_y;
             mag_msg.magnetic_field.z     = (double)imu_q.mag_z;
-            RCSOFTCHECK(rcl_publish(&mag_pub,  &mag_msg, NULL));
+            RCSOFTCHECK(rcl_publish(&mag_pub, &mag_msg, NULL));
         }
 
         /* Publikacja /power co 500 ms (INA219 nie wymaga wysokiej czestotliwosci) */

@@ -7,8 +7,8 @@
  * Pinout zgodny z PCB i konfiguracją CubeMX (tim.c):
  *   TRIG0: PB6    ECHO0: PA0  (TIM2_CH1, AF1)
  *   TRIG1: PB7    ECHO1: PA1  (TIM2_CH2, AF1)
- *   TRIG2: PB8    ECHO2: PA9  (TIM2_CH3, AF10)
- *   TRIG3: PC14   ECHO3: PA10 (TIM2_CH4, AF10)
+ *   TRIG2: PB9    ECHO2: PA9  (TIM2_CH3, AF10)
+ *   TRIG3: PA15   ECHO3: PA10 (TIM2_CH4, AF10)
  *
  * Piny TRIG zdefiniowane makrami poniżej.
  * Piny ECHO są konfigurowane przez CubeMX w MX_TIM2_Init() (tim.c).

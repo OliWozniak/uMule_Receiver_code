@@ -6,7 +6,7 @@ osMessageQueueId_t   imu_data_queue = NULL;
 const osThreadAttr_t imu_task_attr = {
     .name       = "IMU_Manager",
     .priority   = (osPriority_t)osPriorityNormal,
-    .stack_size = 512
+    .stack_size = 768  /* Cortex-M4 + FPU: kontekst 196 B + 9 floatow lokalne + HAL I2C; poprzednie 512 B bylo za male */
 };
 
 // ---------------------------------------------------------------------------
