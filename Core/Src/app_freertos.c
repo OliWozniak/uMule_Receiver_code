@@ -29,12 +29,14 @@
 #include <sensor_msgs/msg/joint_state.h>
 #include <sensor_msgs/msg/imu.h>
 #include <sensor_msgs/msg/magnetic_field.h>
+#include <sensor_msgs/msg/range.h>
 #include <std_msgs/msg/float32_multi_array.h>
 
 #include "usart.h"
 #include "dxl_control.h"
 #include "imu_task.h"
 #include "ina219_task.h"
+#include "sonar_task.h"
 
 // ---------------------------------------------------------------------------
 // KONFIGURACJA SIECI
@@ -99,6 +101,14 @@ static char                              mag_frame_id_buf[16] = "imu_link";
  * data[0]=voltage_V, data[1]=current_A, data[2]=power_W */
 static std_msgs__msg__Float32MultiArray  power_msg;
 static float                             power_data_buf[3]   = {0.0f, 0.0f, 0.0f};
+
+/* --- PUBLISHER: /STM_sonar_N (sensor_msgs/Range — HC-SR04 × 4) ---
+ * Jeden publisher na sensor; NaN w range.range oznacza brak echa.
+ * min_range=0.02 m, max_range=4.0 m, field_of_view~15° (spec HC-SR04) */
+static sensor_msgs__msg__Range           sonar_msg[SONAR_COUNT];
+static char sonar_frame_id_buf[SONAR_COUNT][16] = {
+    "sonar_0", "sonar_1", "sonar_2", "sonar_3"
+};
 
 
 // ---------------------------------------------------------------------------
@@ -328,6 +338,19 @@ void StartDefaultTask(void *argument)
     power_msg.data.size     = 3;
     power_msg.data.capacity = 3;
 
+    /* Inicjalizacja sensor_msgs/Range dla HC-SR04 (4 × sonar) */
+    for (uint8_t i = 0; i < SONAR_COUNT; i++) {
+        memset(&sonar_msg[i], 0, sizeof(sonar_msg[i]));
+        sonar_msg[i].header.frame_id.data     = sonar_frame_id_buf[i];
+        sonar_msg[i].header.frame_id.size     = strlen(sonar_frame_id_buf[i]);
+        sonar_msg[i].header.frame_id.capacity = sizeof(sonar_frame_id_buf[i]);
+        sonar_msg[i].radiation_type = sensor_msgs__msg__Range__ULTRASOUND;
+        sonar_msg[i].field_of_view  = 0.2618f;  /* ~15° w radianach */
+        sonar_msg[i].min_range      = 0.02f;    /* 2 cm */
+        sonar_msg[i].max_range      = 4.00f;    /* 4 m  */
+        sonar_msg[i].range          = 0.0f;
+    }
+
     /* 6. Publisher /wheel_states */
     rcl_publisher_t wheel_pub;
     RCCHECK(rclc_publisher_init_default(
@@ -358,6 +381,20 @@ void StartDefaultTask(void *argument)
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
         "STM_power"));
 
+    /* Publishery /STM_sonar_0 .. /STM_sonar_3 — HC-SR04 (sensor_msgs/Range) */
+    rcl_publisher_t sonar_pub[SONAR_COUNT];
+    {
+        static const char *sonar_topic_names[SONAR_COUNT] = {
+            "STM_sonar_0", "STM_sonar_1", "STM_sonar_2", "STM_sonar_3"
+        };
+        for (uint8_t i = 0; i < SONAR_COUNT; i++) {
+            RCCHECK(rclc_publisher_init_best_effort(
+                &sonar_pub[i], &node,
+                ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Range),
+                sonar_topic_names[i]));
+        }
+    }
+
     /* 7. Subscriber /wheel_commands */
     rcl_subscription_t wheel_cmd_sub;
     RCCHECK(rclc_subscription_init_default(
@@ -376,9 +413,11 @@ void StartDefaultTask(void *argument)
     DXL_RosFeedback_t  feedback;
     IMU_QueueData_t    imu_q    = {0};
     INA219_QueueData_t ina219_q = {0};
+    Sonar_QueueData_t  sonar_q  = {0};
     uint32_t last_pub_tick   = 0;
     uint32_t last_imu_tick   = 0;
     uint32_t last_power_tick = 0;
+    uint32_t last_sonar_tick = 0;
     uint32_t last_ping_tick  = 0;
 
     for (;;)
@@ -390,6 +429,7 @@ void StartDefaultTask(void *argument)
         osMessageQueueGet(dxl_feedback_queue, &feedback, NULL, 0);
         osMessageQueueGet(imu_data_queue,     &imu_q,    NULL, 0);
         osMessageQueueGet(ina219_data_queue,  &ina219_q, NULL, 0);
+        osMessageQueueGet(sonar_data_queue,   &sonar_q,  NULL, 0);
 
         uint32_t now = osKernelGetTickCount();
 
@@ -468,6 +508,21 @@ void StartDefaultTask(void *argument)
             RCSOFTCHECK(rcl_publish(&power_pub, &power_msg, NULL));
         }
 
+        /* Publikacja /STM_sonar_N co 200 ms (~5 Hz).
+         * Cykl HC-SR04 trwa ~140 ms (4 sensorow), wiec 200 ms daje zawsze
+         * swiezy pomiar. NaN w range.range oznacza brak echa / poza zasiegiem. */
+        if ((now - last_sonar_tick) >= 200)
+        {
+            last_sonar_tick = now;
+            for (uint8_t i = 0; i < SONAR_COUNT; i++) {
+                int64_t ts_ns = (int64_t)sonar_q.timestamp_ms[i] * 1000000LL;
+                sonar_msg[i].header.stamp.sec     = (int32_t)(ts_ns / 1000000000LL);
+                sonar_msg[i].header.stamp.nanosec = (uint32_t)(ts_ns % 1000000000LL);
+                sonar_msg[i].range = sonar_q.distance_m[i]; /* NaN = brak echa */
+                RCSOFTCHECK(rcl_publish(&sonar_pub[i], &sonar_msg[i], NULL));
+            }
+        }
+
         /* Ping agenta co 2 s - wykrywa zerwane polaczenie. Przy braku agenta
          * mozna by zrobic reinit, ale na razie tylko sygnalizujemy LED'em. */
         if ((now - last_ping_tick) >= 2000) {
@@ -503,6 +558,11 @@ void MX_FREERTOS_Init(void) {
     INA219_Manager_Init();
     ina219_data_queue = osMessageQueueNew(2, sizeof(INA219_QueueData_t), NULL);
     osThreadNew(INA219_Manager_Task, NULL, &ina219_task_attr);
+
+    /* HC-SR04 (TIM2 IC + TIM6 seq): czujniki odleglosci */
+    Sonar_Manager_Init();
+    sonar_data_queue = osMessageQueueNew(2, sizeof(Sonar_QueueData_t), NULL);
+    osThreadNew(Sonar_Manager_Task, NULL, &sonar_task_attr);
 
     /* micro-ROS */
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);

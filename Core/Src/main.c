@@ -33,7 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "arm_math.h"
-
+#include "sonar_task.h"   /* Sonar_IC_Callback, Sonar_PeriodElapsed_Callback */
 
 /* USER CODE END Includes */
 
@@ -119,6 +119,8 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   MX_TIM3_Init();
+  MX_TIM2_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
 
 //  Servo test_wheel = AxelFlow_servo_init(0x03, &huart3, false);
@@ -207,7 +209,10 @@ void UART4_Print(uint8_t* Message)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    Sonar_IC_Callback(htim, htim->Channel);
+}
 /* USER CODE END 4 */
 
 /**
@@ -228,7 +233,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  Sonar_PeriodElapsed_Callback(htim);
   /* USER CODE END Callback 1 */
 }
 
