@@ -112,16 +112,61 @@ void DXL_Manager_Task(void *argument)
             static const uint8_t ids[]     = {ID_RIGHT_WHEEL, ID_LEFT_WHEEL};
             static const int     offsets[] = {0, 3};
 
+            /* Akumulowane pozycje — KLUCZOWE dla poprawnej odometrii.
+             *
+             * Problem: RX-64 w trybie kola (wheel mode) zwraca Present Position w zakresie
+             * 0-1023 (= 0-300°) i ZAWIJA sie przy pelnym obrocie walu wyjsciowego.
+             * Kiedy rejestr zawija sie, diff_drive_controller widzi skok o ±300° (±5.24 rad)
+             * w jednym cyklu 33ms, co daje estymowana predkosc ~158 rad/s → TELEPORTACJA.
+             *
+             * Rozwiazanie: wykrywamy zawijanie (skok > 150° = polowa zakresu) i akumulujemy
+             * rzeczywisty ruch. Wynik: nieograniczona pozycja w stopniach, rosnie monotonicznie
+             * przy obrocie CCW i maleje przy CW (tak jak rejestr, ale bez zawijania).
+             *
+             * Przeliczenie na rad/s i negacja lewego kola: w app_freertos.c. */
+            static float prev_pos_deg[2]  = {-1.0f, -1.0f}; /* -1 = niezainicjalizowane */
+            static float accum_pos_deg[2] = { 0.0f,  0.0f}; /* [0]=RIGHT, [1]=LEFT */
+
             for (int i = 0; i < 2; i++)
             {
                 uint16_t p, v, l;
                 if (!DXL_ReadPresentState(&bus, ids[i], &p, &v, &l))
                     continue; /* blad: nie nadpisuj starych wartosci */
 
+                /* Walidacja zakresu — ochrona przed "cichą korupcją" pakietu RS-485.
+                 * DXL Protocol 1.0 używa prostego checksuma XOR (nie CRC) → możliwy
+                 * bit-flip ktory checksuma nie wykryje.
+                 *
+                 *   p: Present Position  0–1023  (10-bit, 0–300° w wheel mode)
+                 *   v: Present Speed     0–2047  (bity 0–9 = wartość, bit10 = CW)
+                 *   l: Present Load      0–2047  (analogicznie jak v)
+                 *
+                 * Przekroczenie zakresu = korupcja → zachowaj poprzednie wartości.
+                 * Skutek braku: skok prędkości np. +26 rad/s → błąd pozycji ~50°
+                 * w jednej klatce odometrii (krytyczne przy position_feedback:false). */
+                if (p > 1023 || v > 2047 || l > 2047) continue;
+
                 int off = offsets[i];
 
-                /* Pozycja: 0-1023 jednostek → 0-300° (RX-64: 1 unit = 0.293°) */
-                feedback.data[off] = (float)p * 0.293f;
+                /* Pozycja: akumulowana (kompensacja zawijania rejestru 0-300°).
+                 * RX-64: 1 unit = 0.293°, CCW = rosnaca pozycja, CW = malejaca. */
+                float curr_deg = (float)p * 0.293f;
+
+                if (prev_pos_deg[i] < 0.0f) {
+                    /* Pierwsze odczytanie — zainicjuj, nie akumuluj delty */
+                    prev_pos_deg[i] = curr_deg;
+                } else {
+                    float delta = curr_deg - prev_pos_deg[i];
+                    /* Kompensacja zawijania: jesli skok > polowa zakresu (150°),
+                     * to nastapilo zawinięcie.
+                     * Przyklad CCW: 295° -> 5°:  delta=-290°, korekcja: +300° -> +10° ✓
+                     * Przyklad CW:  5°  -> 295°: delta=+290°, korekcja: -300° -> -10° ✓ */
+                    if (delta >  150.0f) delta -= 300.0f;
+                    if (delta < -150.0f) delta += 300.0f;
+                    accum_pos_deg[i] += delta;
+                    prev_pos_deg[i]   = curr_deg;
+                }
+                feedback.data[off] = accum_pos_deg[i]; /* [°, nieograniczona, bez zawijania] */
 
                 /* Predkosc: bit 10 = kierunek (0=CCW +, 1=CW -) */
                 feedback.data[off + 1] = (v > 1023) ? -(float)(v - 1024)

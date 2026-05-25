@@ -448,13 +448,17 @@ void StartDefaultTask(void *argument)
             /* Predkosc: DXL units -> rad/s
              * Lewe kolo: montaz lustrzany — fizyczny CW (do przodu) = ujemna
              * wartosc DXL, ale w ukladzie robota to ruch do przodu = wartosc dodatnia.
-             * Negujemy predkosc i obciazenie lewego kola w feedbacku. */
+             * Negujemy predkosc lewego kola. */
             state_velocity[0] = -(double)(feedback.data[4] * DXL_UNIT_TO_RAD_S); /* left  */
             state_velocity[1] =  (double)(feedback.data[1] * DXL_UNIT_TO_RAD_S); /* right */
 
-            /* Pozycja: stopnie -> rad — bez negacji (wartosc kata walu, niezalezna od kierunku) */
-            state_position[0] = (double)(feedback.data[3] * DEG_TO_RAD); /* left  */
-            state_position[1] = (double)(feedback.data[0] * DEG_TO_RAD); /* right */
+            /* Pozycja: akumulowane stopnie -> rad
+             * RIGHT: CCW = rosnaca pozycja DXL = jazda do przodu → bez negacji ✓
+             * LEFT:  CW  = malejaca pozycja DXL = jazda do przodu → NEGACJA (sposob jak predkosc)
+             * BEZ negacji: kontroler liczy Δpos/Δt i widzi ujemna predkosc lewego kola
+             *              przy jeździe do przodu → odometria skrecala by w lewo zamiast jechac prosto. */
+            state_position[0] = -(double)(feedback.data[3] * DEG_TO_RAD); /* left  — NEGACJA */
+            state_position[1] =  (double)(feedback.data[0] * DEG_TO_RAD); /* right — bez negacji */
 
             /* Effort: load % — negowany razem z predkoscia (znak = kierunek sily) */
             state_effort[0] = -(double)feedback.data[5]; /* left  */
