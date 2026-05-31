@@ -71,8 +71,6 @@ void DXL_SetGoalSpeedRaw(DXL_Port_t* port, uint8_t id, uint16_t raw_speed) {
 bool DXL_ReadPresentState(DXL_Port_t* port, uint8_t id,
                            uint16_t *position, uint16_t *speed, uint16_t *load)
 {
-    /* Jeden pakiet READ: start=0x24, dlugosc=6 -> odczytuje position(2)+speed(2)+load(2).
-     * Odpowiedz: 0xFF 0xFF ID 8 error pos_L pos_H spd_L spd_H load_L load_H checksum = 12B */
     uint8_t params[2] = { DXL_REG_PRESENT_POSITION, 0x06 };
     DXL_SendPacket(port, id, DXL_INST_READ, params, 2);
 
@@ -83,8 +81,14 @@ bool DXL_ReadPresentState(DXL_Port_t* port, uint8_t id,
     if (res[0] != 0xFF || res[1] != 0xFF || res[2] != id || res[4] != 0x00)
         return false;
 
+    uint8_t csum = 0;
+    for (uint8_t k = 2; k <= 10; k++) csum += res[k];
+    if (res[11] != (uint8_t)(~csum))
+        return false;
+
     *position = (uint16_t)(res[5]  | (res[6]  << 8));
     *speed    = (uint16_t)(res[7]  | (res[8]  << 8));
     *load     = (uint16_t)(res[9]  | (res[10] << 8));
     return true;
 }
+

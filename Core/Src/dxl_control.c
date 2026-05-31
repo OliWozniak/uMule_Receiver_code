@@ -19,14 +19,13 @@
 
 static DXL_Port_t bus;
 
-osMessageQueueId_t dxl_cmd_queue      = NULL;
+osMessageQueueId_t dxl_cmd_queue = NULL;
 osMessageQueueId_t dxl_feedback_queue = NULL;
 
 const osThreadAttr_t dxl_task_attr = {
-    .name       = "DXL_Manager",
-    .priority   = (osPriority_t)osPriorityAboveNormal, /* wyzszy niz micro-ROS, by HAL_UART_Receive nie byl przerywany */
-    .stack_size = 2048
-};
+    .name = "DXL_Manager",
+    .priority = (osPriority_t)osPriorityAboveNormal, /* wyzszy niz micro-ROS, by HAL_UART_Receive nie byl przerywany */
+    .stack_size = 2048};
 
 // ---------------------------------------------------------------------------
 // DXL_Manager_Init — konfiguracja serwomechanizmów
@@ -72,7 +71,7 @@ void DXL_Manager_Init(void)
 // ---------------------------------------------------------------------------
 void DXL_Manager_Task(void *argument)
 {
-    DXL_RosCommand_t  cmd;
+    DXL_RosCommand_t cmd;
     DXL_RosFeedback_t feedback = {0};
 
     for (;;)
@@ -83,7 +82,8 @@ void DXL_Manager_Task(void *argument)
             /* speed_pct [-100, 100] → raw Dynamixel [0, 1023] + bit kierunku */
             float abs_pct = (cmd.speed_pct < 0.0f) ? -cmd.speed_pct : cmd.speed_pct;
             uint16_t raw_val = (uint16_t)(abs_pct * 10.23f);
-            if (raw_val > 1023) raw_val = 1023;
+            if (raw_val > 1023)
+                raw_val = 1023;
 
             /*
              * Kierunek obrotu (RX-64 w trybie koła):
@@ -95,11 +95,13 @@ void DXL_Manager_Task(void *argument)
              */
             if (cmd.id == ID_RIGHT_WHEEL)
             {
-                if (cmd.speed_pct < 0.0f) raw_val |= 0x400;
+                if (cmd.speed_pct < 0.0f)
+                    raw_val |= 0x400;
             }
             else if (cmd.id == ID_LEFT_WHEEL)
             {
-                if (cmd.speed_pct >= 0.0f) raw_val |= 0x400;
+                if (cmd.speed_pct >= 0.0f)
+                    raw_val |= 0x400;
             }
 
             DXL_SetGoalSpeedRaw(&bus, cmd.id, raw_val);
@@ -109,8 +111,8 @@ void DXL_Manager_Task(void *argument)
          *    Zastepuje 3 osobne DXL_Read16, skracajac czas RS-485 z ~11ms do ~4ms.
          *    Przy bledzie odczytu zachowujemy ostatnie poprawne wartosci. */
         {
-            static const uint8_t ids[]     = {ID_RIGHT_WHEEL, ID_LEFT_WHEEL};
-            static const int     offsets[] = {0, 3};
+            static const uint8_t ids[] = {ID_RIGHT_WHEEL, ID_LEFT_WHEEL};
+            static const int offsets[] = {0, 3};
 
             /* Akumulowane pozycje — KLUCZOWE dla poprawnej odometrii.
              *
@@ -124,8 +126,8 @@ void DXL_Manager_Task(void *argument)
              * przy obrocie CCW i maleje przy CW (tak jak rejestr, ale bez zawijania).
              *
              * Przeliczenie na rad/s i negacja lewego kola: w app_freertos.c. */
-            static float prev_pos_deg[2]  = {-1.0f, -1.0f}; /* -1 = niezainicjalizowane */
-            static float accum_pos_deg[2] = { 0.0f,  0.0f}; /* [0]=RIGHT, [1]=LEFT */
+            static float prev_pos_deg[2] = {-1.0f, -1.0f}; /* -1 = niezainicjalizowane */
+            static float accum_pos_deg[2] = {0.0f, 0.0f};  /* [0]=RIGHT, [1]=LEFT */
 
             for (int i = 0; i < 2; i++)
             {
@@ -144,7 +146,8 @@ void DXL_Manager_Task(void *argument)
                  * Przekroczenie zakresu = korupcja → zachowaj poprzednie wartości.
                  * Skutek braku: skok prędkości np. +26 rad/s → błąd pozycji ~50°
                  * w jednej klatce odometrii (krytyczne przy position_feedback:false). */
-                if (p > 1023 || v > 2047 || l > 2047) continue;
+                if (p > 1023 || v > 2047 || l > 2047)
+                    continue;
 
                 int off = offsets[i];
 
@@ -152,29 +155,36 @@ void DXL_Manager_Task(void *argument)
                  * RX-64: 1 unit = 0.293°, CCW = rosnaca pozycja, CW = malejaca. */
                 float curr_deg = (float)p * 0.293f;
 
-                if (prev_pos_deg[i] < 0.0f) {
+                if (prev_pos_deg[i] < 0.0f)
+                {
                     /* Pierwsze odczytanie — zainicjuj, nie akumuluj delty */
                     prev_pos_deg[i] = curr_deg;
-                } else {
-                    float delta = curr_deg - prev_pos_deg[i];
-                    /* Kompensacja zawijania: jesli skok > polowa zakresu (150°),
-                     * to nastapilo zawinięcie.
-                     * Przyklad CCW: 295° -> 5°:  delta=-290°, korekcja: +300° -> +10° ✓
-                     * Przyklad CW:  5°  -> 295°: delta=+290°, korekcja: -300° -> -10° ✓ */
-                    if (delta >  150.0f) delta -= 300.0f;
-                    if (delta < -150.0f) delta += 300.0f;
-                    accum_pos_deg[i] += delta;
-                    prev_pos_deg[i]   = curr_deg;
                 }
-                feedback.data[off] = accum_pos_deg[i]; /* [°, nieograniczona, bez zawijania] */
+                else
+                {
+                    float delta = curr_deg - prev_pos_deg[i];
+                    if (delta > 150.0f)
+                        delta -= 300.0f;
+                    if (delta < -150.0f)
+                        delta += 300.0f;
+                    if (fabsf(delta) > 25.0f)
+                    {
+                        prev_pos_deg[i] = curr_deg;
+                        continue; /* nie aktualizuj feedback.data ani prędkości z tego pakietu */
+                    }
+
+                    accum_pos_deg[i] += delta;
+                    prev_pos_deg[i] = curr_deg;
+                }
+                feedback.data[off] = accum_pos_deg[i];
 
                 /* Predkosc: bit 10 = kierunek (0=CCW +, 1=CW -) */
                 feedback.data[off + 1] = (v > 1023) ? -(float)(v - 1024)
-                                                     :  (float)v;
+                                                    : (float)v;
 
                 /* Obciazenie: bit 10 = kierunek, wartosc 0-1023 -> % */
                 feedback.data[off + 2] = (l > 1023) ? -(float)(l - 1024) / 10.23f
-                                                     :  (float)l           / 10.23f;
+                                                    : (float)l / 10.23f;
             }
 
             /* Nadpisz stare dane i wstaw nowe */
@@ -184,6 +194,6 @@ void DXL_Manager_Task(void *argument)
             osMessageQueuePut(dxl_feedback_queue, &feedback, 0, 0);
         }
 
-        osDelay(20);  /* ~50 Hz */
+        osDelay(20); /* ~50 Hz */
     }
 }
