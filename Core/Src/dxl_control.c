@@ -194,6 +194,6 @@ void DXL_Manager_Task(void *argument)
             osMessageQueuePut(dxl_feedback_queue, &feedback, 0, 0);
         }
 
-        osDelay(20); /* ~50 Hz */
+        osDelay(10); /* ~100 Hz */
     }
 }
