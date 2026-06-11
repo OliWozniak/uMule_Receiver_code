@@ -2,11 +2,11 @@
  *
  * Abstrakcja sprzetu IMU: LSM6DS3TR-C (accel + gyro) + LIS3MDL (mag)
  * Implementacja oparta na oficjalnych sterownikach ST MEMS (stmdev_ctx_t).
- * Interfejs: I2C4, oba sensory na tym samym busie.
+ * Interfejs: I2C3, oba sensory na tym samym busie.
  *
  * Adresy I2C (8-bit, HAL format):
- *   LSM6DS3TR-C  LSM6DS3TR_C_I2C_ADD_L = 0xD5  (SDO/SA0 = GND, 7-bit 0x6A)
- *   LIS3MDL      LIS3MDL_I2C_ADD_L     = 0x39  (SA1 = GND, 7-bit 0x1C)
+ *   LSM6DS3TR-C  LSM6DS3TR_C_I2C_ADD_L = 0xD5  (SDO/SA0 = GND, 7-bit 0x6A) na I2C3
+ *   LIS3MDL      LIS3MDL_I2C_ADD_L     = 0x39  (SA1 = GND, 7-bit 0x1C)    na I2C3
  */
 
 #ifndef IMU_DRIVER_H_

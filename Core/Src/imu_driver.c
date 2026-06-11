@@ -26,7 +26,7 @@ static int32_t lsm6_write(void *handle, uint8_t reg,
         (I2C_HandleTypeDef *)handle,
         LSM6DS3TR_C_I2C_ADD_L,          /* 8-bit address (HAL ignores LSB) */
         reg, I2C_MEMADD_SIZE_8BIT,
-        (uint8_t *)buf, len, 10);
+        (uint8_t *)buf, len, 50);
     return (s == HAL_OK) ? 0 : -1;
 }
 
@@ -37,7 +37,7 @@ static int32_t lsm6_read(void *handle, uint8_t reg,
         (I2C_HandleTypeDef *)handle,
         LSM6DS3TR_C_I2C_ADD_L,
         reg, I2C_MEMADD_SIZE_8BIT,
-        buf, len, 10);
+        buf, len, 50);
     return (s == HAL_OK) ? 0 : -1;
 }
 
@@ -48,7 +48,7 @@ static int32_t lis3_write(void *handle, uint8_t reg,
         (I2C_HandleTypeDef *)handle,
         LIS3MDL_I2C_ADD_L,
         reg, I2C_MEMADD_SIZE_8BIT,
-        (uint8_t *)buf, len, 10);
+        (uint8_t *)buf, len, 50);
     return (s == HAL_OK) ? 0 : -1;
 }
 
@@ -59,7 +59,7 @@ static int32_t lis3_read(void *handle, uint8_t reg,
         (I2C_HandleTypeDef *)handle,
         LIS3MDL_I2C_ADD_L,
         reg, I2C_MEMADD_SIZE_8BIT,
-        buf, len, 10);
+        buf, len, 50);
     return (s == HAL_OK) ? 0 : -1;
 }
 

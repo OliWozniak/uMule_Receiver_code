@@ -12,11 +12,11 @@ const osThreadAttr_t ina219_task_attr = {
 // ---------------------------------------------------------------------------
 void INA219_Manager_Init(void)
 {
-    ina219_dbg.ready = HAL_I2C_IsDeviceReady(&hi2c3, INA219_ADDR << 1, 3, 100);
+    ina219_dbg.ready = HAL_I2C_IsDeviceReady(&hi2c4, INA219_ADDR << 1, 3, 100);
 
     if (ina219_dbg.ready == HAL_OK)
     {
-        ina219_dbg.init_ok = INA219_Init(&hi2c3);
+        ina219_dbg.init_ok = INA219_Init(&hi2c4);
 
         /* Odczyt rejestru konfiguracji po inicjalizacji.
          * Oczekiwane: 0x3FFF (po naszym write). Domyslne (reset): 0x399F. */
@@ -24,8 +24,8 @@ void INA219_Manager_Init(void)
         {
             uint8_t buf[2] = {0};
             uint8_t reg = INA219_REG_CONFIG;
-            if (HAL_I2C_Master_Transmit(&hi2c3, INA219_ADDR << 1, &reg, 1, 100) == HAL_OK)
-                HAL_I2C_Master_Receive(&hi2c3, INA219_ADDR << 1, buf, 2, 100);
+            if (HAL_I2C_Master_Transmit(&hi2c4, INA219_ADDR << 1, &reg, 1, 100) == HAL_OK)
+                HAL_I2C_Master_Receive(&hi2c4, INA219_ADDR << 1, buf, 2, 100);
             ina219_dbg.config_reg = (uint16_t)((buf[0] << 8) | buf[1]);
         }
     }
@@ -39,7 +39,7 @@ void INA219_Manager_Task(void *argument)
 
     for (;;)
     {
-        if (INA219_Read(&hi2c3, &hw))
+        if (INA219_Read(&hi2c4, &hw))
         {
             q.voltage_V = hw.voltage_V;
             q.current_A = hw.current_A;

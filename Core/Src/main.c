@@ -34,6 +34,8 @@
 #include <string.h>
 #include "arm_math.h"
 #include "sonar_task.h"   /* Sonar_IC_Callback, Sonar_PeriodElapsed_Callback */
+#include "lsm6ds3tr_c_reg.h"
+#include "lis3mdl_reg.h"
 
 /* USER CODE END Includes */
 
@@ -62,6 +64,7 @@ void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 void UART4_Print(uint8_t* Message);
+static void I2C_SelfTest(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -130,6 +133,69 @@ int main(void)
   // Sygnalizacja startu (trzy diody)
   UART4_Print((uint8_t*)"Peripherals OK. Starting RTOS...\n");
 
+  /* Test I2C — wykonywany przed FreeRTOS, wyniki przez UART4 (printf) */
+  I2C_SelfTest();
+
+  /* -----------------------------------------------------------------------
+   * TRYB OSCYLOSKOPOWY: jesli #define I2C_SCOPE_MODE jest odkomentowane,
+   * program wchodzi w nieskonczona petle wysylajaca pakiety I2C co 10ms.
+   * Pozwala to zlapac sygnal na oscyloskopie.
+   *
+   * Obserwuj piny PC6 (SCL) i PC7 (SDA) na ukladzie STM32G474.
+   * Jesli oscyloskop dalej nic nie widzi na tych pinach — to bledne GPIO/AF.
+   *
+   * ODKOMENTUJ ponizej, wgraj, sprawdz piny, potem zakomentuj z powrotem.
+   * ----------------------------------------------------------------------- */
+// #define I2C_SCOPE_MODE
+#ifdef I2C_SCOPE_MODE
+  printf("TRYB OSCYLOSKOPOWY\r\n");
+
+  /* FAZA 1: GPIO blink na PC6 i PC7 przez 3 sekundy.
+   * Jesli oscyloskop widzi sygnaly ~500Hz — jestes na wlasciwych pinach.
+   * Jesli nie widzi nic — zly pin na PCB lub zle mapowanie.
+   * Po 3 sekundach automatycznie przechodzimy do FAZY 2 (I2C). */
+  printf("FAZA 1 (3s): Blink GPIO na PC6 i PC7 @ 500Hz. Sprawdz oscyloskop.\r\n");
+  {
+      /* Tymczasowo przelacz PC6/PC7 na Output Open-Drain */
+      GPIO_InitTypeDef gpio_test = {0};
+      gpio_test.Pin   = GPIO_PIN_6 | GPIO_PIN_7;
+      gpio_test.Mode  = GPIO_MODE_OUTPUT_OD;
+      gpio_test.Pull  = GPIO_NOPULL;
+      gpio_test.Speed = GPIO_SPEED_FREQ_LOW;
+      HAL_GPIO_Init(GPIOC, &gpio_test);
+
+      for (int i = 0; i < 1500; i++) {   /* 1500 × 2ms = 3 sekundy */
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6 | GPIO_PIN_7, GPIO_PIN_RESET); /* LOW  */
+          HAL_Delay(1);
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6 | GPIO_PIN_7, GPIO_PIN_SET);   /* HIGH */
+          HAL_Delay(1);
+      }
+
+      /* Przywroc PC6/PC7 jako AF8 (I2C4) */
+      gpio_test.Mode      = GPIO_MODE_AF_OD;
+      gpio_test.Alternate = GPIO_AF8_I2C4;
+      HAL_GPIO_Init(GPIOC, &gpio_test);
+      /* Reinit I2C4 po zmianie GPIO */
+      HAL_I2C_DeInit(&hi2c3);
+      HAL_I2C_Init(&hi2c3);
+  }
+
+  /* FAZA 2: Petla I2C — pakiety co 10ms.
+   * Na oscyloskopie powinienes zobaczyc serie ~9 impulsow co 10ms na SCL. */
+  printf("FAZA 2: Petla I2C IsDeviceReady co 10ms (SCL=PC6, SDA=PC7).\r\n");
+  uint32_t scope_cnt = 0;
+  for (;;) {
+      HAL_StatusTypeDef r1 = HAL_I2C_IsDeviceReady(&hi2c3, LSM6DS3TR_C_I2C_ADD_L, 1, 5);
+      HAL_StatusTypeDef r2 = HAL_I2C_IsDeviceReady(&hi2c3, LIS3MDL_I2C_ADD_L, 1, 5);
+      HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+      if ((scope_cnt % 100) == 0) {
+          printf("[%lu] LSM6=%d LIS3=%d  (0=OK 1=NACK 3=TIMEOUT)\r\n",
+                 scope_cnt, (int)r1, (int)r2);
+      }
+      scope_cnt++;
+      HAL_Delay(10);
+  }
+#endif /* I2C_SCOPE_MODE */
 
   /* USER CODE END 2 */
 
@@ -199,6 +265,155 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/* ---------------------------------------------------------------------------
+ * I2C_SelfTest — wywolywany raz przed FreeRTOS, wyniki przez printf (UART4).
+ *
+ * Co sprawdza:
+ *  1. HAL_I2C_IsDeviceReady — czy peripheral w ogole generuje START na SCL/SDA.
+ *     Jesli timeout (HAL_TIMEOUT=3): linia stuck lub bledne GPIO AF/piny.
+ *     Jesli NACK (HAL_ERROR=1): peripheral dziala ale sensor nie odpowiada
+ *     (zly adres, brak zasilania, zly pin SDO/SA1).
+ *  2. WHO_AM_I — weryfikacja czy odczyt rejestrow dziala poprawnie.
+ *  3. Bus recovery — jesli I2C jest w stanie bledu po poprzedniej transakcji,
+ *     ResetBus resetuje peripheral i generuje 9 impulsow SCL zeby odblokowa SDA.
+ *
+ * Oczekiwane wyniki:
+ *   LSM6DS3TR-C (I2C addr 0x6A, SDO=GND): IsDeviceReady=OK, WHO_AM_I=0x6A
+ *   LIS3MDL     (I2C addr 0x1C, SA1=GND):  IsDeviceReady=OK, WHO_AM_I=0x3D
+ *   Alternatywne adresy jesli piny SDO/SA1 podciagniete do VCC:
+ *     LSM6: 0x6B (uzyj LSM6DS3TR_C_I2C_ADD_H = 0xD7)
+ *     LIS3: 0x1E (uzyj LIS3MDL_I2C_ADD_H = 0x3D)
+ * --------------------------------------------------------------------------- */
+
+static void I2C_BusRecovery(I2C_HandleTypeDef *hi2c)
+{
+    /* Wymus reset peripheral I2C i wygeneruj 9 taktow SCL aby odblokowa SDA.
+     * Wymagane gdy poprzednia transakcja skoncyla sie bledem i SDA jest stuck LOW. */
+    HAL_I2C_DeInit(hi2c);
+    HAL_Delay(5);
+
+    /* Reconfigure pins as GPIO output for manual clocking */
+    GPIO_InitTypeDef gpio = {0};
+    uint16_t scl_pin, sda_pin;
+    GPIO_TypeDef *port = GPIOC;
+
+    if (hi2c->Instance == I2C4) {
+        scl_pin = GPIO_PIN_6;
+        sda_pin = GPIO_PIN_7;
+    } else {
+        scl_pin = GPIO_PIN_8;
+        sda_pin = GPIO_PIN_9;
+    }
+
+    gpio.Mode  = GPIO_MODE_OUTPUT_OD;
+    gpio.Pull  = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio.Pin   = scl_pin | sda_pin;
+    HAL_GPIO_Init(port, &gpio);
+
+    HAL_GPIO_WritePin(port, sda_pin, GPIO_PIN_SET);
+    for (int i = 0; i < 9; i++) {
+        HAL_GPIO_WritePin(port, scl_pin, GPIO_PIN_RESET);
+        HAL_Delay(1);
+        HAL_GPIO_WritePin(port, scl_pin, GPIO_PIN_SET);
+        HAL_Delay(1);
+    }
+    /* STOP condition */
+    HAL_GPIO_WritePin(port, sda_pin, GPIO_PIN_RESET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(port, scl_pin, GPIO_PIN_SET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(port, sda_pin, GPIO_PIN_SET);
+    HAL_Delay(5);
+
+    HAL_I2C_Init(hi2c);
+}
+
+static void I2C_SelfTest(void)
+{
+    HAL_StatusTypeDef st;
+    uint8_t who = 0;
+
+    printf("\r\n=== I2C Self-Test (przed FreeRTOS) ===\r\n");
+
+    /* --- I2C3: LSM6DS3TR-C (0x6A) — IMU na I2C3 (PC8=SCL, PC9=SDA) --- */
+    printf("[I2C3] LSM6DS3TR-C probe (addr=0x%02X, SDO=GND)...\r\n",
+           LSM6DS3TR_C_I2C_ADD_L >> 1);
+    st = HAL_I2C_IsDeviceReady(&hi2c3, LSM6DS3TR_C_I2C_ADD_L, 3, 200);
+    if (st == HAL_OK) {
+        printf("  IsDeviceReady: OK\r\n");
+        who = 0;
+        HAL_I2C_Mem_Read(&hi2c3, LSM6DS3TR_C_I2C_ADD_L,
+                         LSM6DS3TR_C_WHO_AM_I, I2C_MEMADD_SIZE_8BIT, &who, 1, 100);
+        printf("  WHO_AM_I: 0x%02X  (oczekiwane 0x%02X) %s\r\n",
+               who, LSM6DS3TR_C_ID,
+               (who == LSM6DS3TR_C_ID) ? "[OK]" : "[BLAD - zly sensor lub rejestr]");
+    } else if (st == HAL_TIMEOUT) {
+        printf("  IsDeviceReady: TIMEOUT (3) - bus stuck lub bledne GPIO/AF!\r\n");
+        I2C_BusRecovery(&hi2c3);
+        printf("  Bus recovery wykonany.\r\n");
+    } else {
+        printf("  IsDeviceReady: NACK (1) - sensor nie odpowiada.\r\n");
+        printf("  Probuje takze adres HIGH (SDO=VCC, 0x%02X)...\r\n",
+               LSM6DS3TR_C_I2C_ADD_H >> 1);
+        st = HAL_I2C_IsDeviceReady(&hi2c3, LSM6DS3TR_C_I2C_ADD_H, 3, 200);
+        printf("  Adres HIGH: %s\r\n",
+               (st == HAL_OK) ? "OK! SDO jest podciagniete do VCC, zmien adres."
+                               : (st == HAL_TIMEOUT ? "TIMEOUT" : "NACK - nie ma sensora"));
+    }
+
+    /* --- I2C3: LIS3MDL (0x1C) --- */
+    printf("[I2C3] LIS3MDL probe (addr=0x%02X, SA1=GND)...\r\n",
+           LIS3MDL_I2C_ADD_L >> 1);
+    st = HAL_I2C_IsDeviceReady(&hi2c3, LIS3MDL_I2C_ADD_L, 3, 200);
+    if (st == HAL_OK) {
+        printf("  IsDeviceReady: OK\r\n");
+        who = 0;
+        HAL_I2C_Mem_Read(&hi2c3, LIS3MDL_I2C_ADD_L,
+                         LIS3MDL_WHO_AM_I, I2C_MEMADD_SIZE_8BIT, &who, 1, 100);
+        printf("  WHO_AM_I: 0x%02X  (oczekiwane 0x%02X) %s\r\n",
+               who, LIS3MDL_ID,
+               (who == LIS3MDL_ID) ? "[OK]" : "[BLAD - zly sensor lub rejestr]");
+    } else if (st == HAL_TIMEOUT) {
+        printf("  IsDeviceReady: TIMEOUT (3) - bus stuck lub bledne GPIO/AF!\r\n");
+        I2C_BusRecovery(&hi2c3);
+        printf("  Bus recovery wykonany.\r\n");
+    } else {
+        printf("  IsDeviceReady: NACK (1) - LIS3MDL nie odpowiada.\r\n");
+        printf("  Probuje takze adres HIGH (SA1=VCC, 0x%02X)...\r\n",
+               LIS3MDL_I2C_ADD_H >> 1);
+        st = HAL_I2C_IsDeviceReady(&hi2c3, LIS3MDL_I2C_ADD_H, 3, 200);
+        printf("  Adres HIGH: %s\r\n",
+               (st == HAL_OK) ? "OK! SA1 jest podciagniete do VCC."
+                               : (st == HAL_TIMEOUT ? "TIMEOUT" : "NACK - nie ma sensora"));
+    }
+
+    /* --- Pelny skan I2C3 i I2C4 --- */
+    static const struct { I2C_HandleTypeDef *hi2c; const char *name; } buses[] = {
+        { &hi2c3, "I2C3 (PC8=SCL, PC9=SDA)" },
+        { &hi2c4, "I2C4 (PC6=SCL, PC7=SDA)" },
+    };
+    for (int b = 0; b < 2; b++) {
+        printf("[%s] Skan 0x08..0x77:\r\n", buses[b].name);
+        uint8_t found = 0;
+        for (uint8_t addr7 = 0x08; addr7 <= 0x77; addr7++) {
+            if (HAL_I2C_IsDeviceReady(buses[b].hi2c, (uint16_t)(addr7 << 1), 1, 20) == HAL_OK) {
+                /* Podpowiedz co to moze byc */
+                const char *hint = "";
+                if      (addr7 == 0x6A || addr7 == 0x6B) hint = " <- LSM6DS3TR-C";
+                else if (addr7 == 0x1C || addr7 == 0x1E) hint = " <- LIS3MDL";
+                else if (addr7 >= 0x40 && addr7 <= 0x4F) hint = " <- INA219 / PCF8523 / podobne";
+                else if (addr7 >= 0x50 && addr7 <= 0x57) hint = " <- EEPROM / Flash";
+                printf("  0x%02X%s\r\n", addr7, hint);
+                found++;
+            }
+        }
+        if (!found) printf("  Brak urzadzen.\r\n");
+    }
+
+    printf("=== Koniec testu I2C ===\r\n\r\n");
+}
 
 // --- ZADANIE PRZETWARZANIA ADC ---
 
