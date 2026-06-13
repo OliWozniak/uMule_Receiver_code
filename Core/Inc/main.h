@@ -57,6 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define HC_SR_04_Pin GPIO_PIN_3
+#define HC_SR_04_GPIO_Port GPIOC
 #define UART_TX_Ex_LiDaR_Pin GPIO_PIN_2
 #define UART_TX_Ex_LiDaR_GPIO_Port GPIOA
 #define UART_RX_Ex_LiDaR_Pin GPIO_PIN_3
@@ -71,8 +73,6 @@ void Error_Handler(void);
 #define RS_485_TX_GPIO_Port GPIOB
 #define RS_485_RX_Pin GPIO_PIN_11
 #define RS_485_RX_GPIO_Port GPIOB
-#define HC_SR_04_Pin GPIO_PIN_15
-#define HC_SR_04_GPIO_Port GPIOA
 #define DBG_LED0_Pin GPIO_PIN_3
 #define DBG_LED0_GPIO_Port GPIOB
 #define DBG_LED1_Pin GPIO_PIN_4
