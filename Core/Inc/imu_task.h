@@ -10,7 +10,13 @@ typedef struct {
     float accel_x, accel_y, accel_z;
     float gyro_x,  gyro_y,  gyro_z;
     float mag_x,   mag_y,   mag_z;
+    /* Wariancja (diagonala macierzy kowariancji) — liczy Welford online */
+    float var_gx, var_gy, var_gz;
+    float var_ax, var_ay, var_az;
+    bool  cov_valid; /* true po zebraniu IMU_COV_MIN_SAMPLES prob */
 } IMU_QueueData_t;
+
+#define IMU_COV_MIN_SAMPLES 200u  /* ~4 s przy 50 Hz — wymagane przed uznaniem kowariancji */
 
 /* Struktura diagnostyczna — obserwuj w debuggerze (Live Expressions).
  *

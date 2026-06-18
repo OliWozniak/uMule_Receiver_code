@@ -52,7 +52,7 @@
 // ---------------------------------------------------------------------------
 #define WHEEL_SEPARATION_M   0.30f
 #define WHEEL_RADIUS_M       0.08f
-#define MAX_RPM              114.0f
+#define MAX_RPM              97.0f
 #define RPM_TO_RAD_S         (2.0f * 3.14159265f / 60.0f)
 #define MAX_WHEEL_RAD_S      (MAX_RPM * RPM_TO_RAD_S)   // ~11.94 rad/s
 #define DXL_UNIT_TO_RAD_S   (0.111f * RPM_TO_RAD_S)     // 1 unit RX-64 = 0.111 RPM -> rad/s
@@ -325,6 +325,12 @@ void StartDefaultTask(void *argument)
     imu_msg.header.frame_id.size     = strlen(imu_frame_id_buf);
     imu_msg.header.frame_id.capacity = sizeof(imu_frame_id_buf);
     imu_msg.orientation_covariance[0] = -1.0;
+    imu_msg.angular_velocity_covariance[0] = 5.1e-7f;
+    imu_msg.angular_velocity_covariance[4] = 5.1e-7f;
+    imu_msg.angular_velocity_covariance[8] = 5.1e-7f;
+    imu_msg.linear_acceleration_covariance[0] = 8.1e-5f;
+    imu_msg.linear_acceleration_covariance[4] = 8.1e-5f;
+    imu_msg.linear_acceleration_covariance[8] = 8.1e-5f;
 
     /* Inicjalizacja sensor_msgs/MagneticField */
     memset(&mag_msg, 0, sizeof(mag_msg));
@@ -487,6 +493,15 @@ void StartDefaultTask(void *argument)
             imu_msg.linear_acceleration.x = (double)imu_q.accel_x;
             imu_msg.linear_acceleration.y = (double)imu_q.accel_y;
             imu_msg.linear_acceleration.z = (double)imu_q.accel_z;
+
+            if (imu_q.cov_valid) {
+                imu_msg.angular_velocity_covariance[0] = (double)imu_q.var_gx;
+                imu_msg.angular_velocity_covariance[4] = (double)imu_q.var_gy;
+                imu_msg.angular_velocity_covariance[8] = (double)imu_q.var_gz;
+                imu_msg.linear_acceleration_covariance[0] = (double)imu_q.var_ax;
+                imu_msg.linear_acceleration_covariance[4] = (double)imu_q.var_ay;
+                imu_msg.linear_acceleration_covariance[8] = (double)imu_q.var_az;
+            }
             RCSOFTCHECK(rcl_publish(&imu_pub, &imu_msg, NULL));
 
             mag_msg.header.stamp.sec     = ts_sec;
@@ -534,7 +549,7 @@ void StartDefaultTask(void *argument)
         }
 
         HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
-        osDelay(10);
+        osDelay(1);
     }
 }
 

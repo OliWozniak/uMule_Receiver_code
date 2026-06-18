@@ -39,11 +39,27 @@ void IMU_Manager_Init(void)
     imu_dbg.init_ok = IMU_Init(&hi2c3);
 }
 
+/* Welford online variance — aktualizuje mean i M2 dla jednej osi */
+static inline void welford_update(float x, uint32_t n, float *mean, float *M2)
+{
+    float delta  = x - *mean;
+    *mean += delta / (float)n;
+    float delta2 = x - *mean;
+    *M2  += delta * delta2;
+}
+
 // ---------------------------------------------------------------------------
 void IMU_Manager_Task(void *argument)
 {
     IMU_Data_t      hw;
     IMU_QueueData_t q = {0};
+
+    /* Stan Welford — 6 osi × (mean + M2) */
+    float mean_gx = 0, mean_gy = 0, mean_gz = 0;
+    float mean_ax = 0, mean_ay = 0, mean_az = 0;
+    float M2_gx   = 0, M2_gy  = 0, M2_gz  = 0;
+    float M2_ax   = 0, M2_ay  = 0, M2_az  = 0;
+    uint32_t n = 0;
 
     for (;;)
     {
@@ -52,6 +68,37 @@ void IMU_Manager_Task(void *argument)
             q.accel_x = hw.accel_x;  q.accel_y = hw.accel_y;  q.accel_z = hw.accel_z;
             q.gyro_x  = hw.gyro_x;   q.gyro_y  = hw.gyro_y;   q.gyro_z  = hw.gyro_z;
             q.mag_x   = hw.mag_x;    q.mag_y   = hw.mag_y;    q.mag_z   = hw.mag_z;
+
+            /* Welford update — n > 0 wymagane przed dzieleniem */
+            n++;
+            welford_update(hw.gyro_x,  n, &mean_gx, &M2_gx);
+            welford_update(hw.gyro_y,  n, &mean_gy, &M2_gy);
+            welford_update(hw.gyro_z,  n, &mean_gz, &M2_gz);
+            welford_update(hw.accel_x, n, &mean_ax, &M2_ax);
+            welford_update(hw.accel_y, n, &mean_ay, &M2_ay);
+            welford_update(hw.accel_z, n, &mean_az, &M2_az);
+
+            if (n >= IMU_COV_MIN_SAMPLES)
+            {
+                float inv = 1.0f / (float)(n - 1);
+                q.var_gx = M2_gx * inv;
+                q.var_gy = M2_gy * inv;
+                q.var_gz = M2_gz * inv;
+                q.var_ax = M2_ax * inv;
+                q.var_ay = M2_ay * inv;
+                q.var_az = M2_az * inv;
+                q.cov_valid = true;
+
+                /* Zapobiegaj przepełnieniu akumulatora przy bardzo długim biegu.
+                 * Po 10× MIN_SAMPLES resetujemy do aktualnych wartości (soft reset). */
+                if (n >= IMU_COV_MIN_SAMPLES * 10u)
+                {
+                    mean_gx = q.gyro_x;  mean_gy = q.gyro_y;  mean_gz = q.gyro_z;
+                    mean_ax = q.accel_x; mean_ay = q.accel_y; mean_az = q.accel_z;
+                    M2_gx = M2_gy = M2_gz = M2_ax = M2_ay = M2_az = 0;
+                    n = 1;
+                }
+            }
 
             if (osMessageQueueGetCount(imu_data_queue) > 0)
                 osMessageQueueReset(imu_data_queue);
