@@ -57,6 +57,14 @@ void DXL_Manager_Init(void)
 
         DXL_SetWheelMode(&bus, wheels[i]);
         HAL_Delay(55); /* CW/CCW_ANGLE_LIMIT rowniez w EEPROM */
+
+        /* Jawne ustawienie Torque Limit = 1023 (100%).
+         * Rejestr RAM 0x22 jest wczytywany z EEPROM 0x0E przy starcie DXL.
+         * Jesli EEPROM zostal zmieniony przez Dynamixel Wizard, silnik moze
+         * miec ograniczony moment i nie osiagac zadanej predkosci. */
+        DXL_Write16(&bus, wheels[i], DXL_REG_TORQUE_LIMIT, 1023);
+        HAL_Delay(5);
+
         DXL_SetTorque(&bus, wheels[i], true);
         HAL_Delay(10);
         DXL_SetGoalSpeedRaw(&bus, wheels[i], 0);
