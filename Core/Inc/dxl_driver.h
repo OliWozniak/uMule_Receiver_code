@@ -11,6 +11,7 @@
 #define DXL_REG_CCW_ANGLE_LIMIT     0x08
 #define DXL_REG_STATUS_RETURN_LEVEL 0x10  // [EEPROM] 0=nigdy, 1=tylko READ, 2=zawsze
 #define DXL_REG_TORQUE_ENABLE       0x18
+#define DXL_REG_TORQUE_LIMIT        0x22  // [RAM] 0-1023, 1023=100% max torque; wczytywany z EEPROM 0x0E przy starcie
 #define DXL_REG_GOAL_POSITION       0x1E
 #define DXL_REG_MOVING_SPEED        0x20
 #define DXL_REG_PRESENT_POSITION    0x24  // 6 kolejnych bajtow: pos(2)+spd(2)+load(2)
