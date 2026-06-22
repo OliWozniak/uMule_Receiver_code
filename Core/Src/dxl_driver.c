@@ -60,7 +60,7 @@ void DXL_SetTorque(DXL_Port_t* port, uint8_t id, bool enable) {
 
 void DXL_SetWheelMode(DXL_Port_t* port, uint8_t id) {
     DXL_Write16(port, id, DXL_REG_CW_ANGLE_LIMIT, 0);
-    HAL_Delay(5);
+    HAL_Delay(55); /* EEPROM write requires ~55 ms before next write */
     DXL_Write16(port, id, DXL_REG_CCW_ANGLE_LIMIT, 0);
 }
 

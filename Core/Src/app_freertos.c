@@ -213,22 +213,176 @@ static void wheel_cmd_callback(const void *msgin)
 
 // ---------------------------------------------------------------------------
 // Makra obslugi bledow
-// RCCHECK     - blad krytyczny (init), zapala czerwona LED, wiesza task
+// RCCHECK     - blad krytyczny podczas (re)inicjalizacji: ustawia flage init_ok
 // RCSOFTCHECK - blad miekki (np. publish), tylko inkrementuje licznik bledow
 // ---------------------------------------------------------------------------
 static volatile uint32_t soft_error_count = 0;
 
 #define RCCHECK(fn) {                                           \
     rcl_ret_t _rc = (fn);                                       \
-    if (_rc != RCL_RET_OK) {                                    \
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_SET);     \
-        while(1) { osDelay(1000); }                             \
-    }                                                           \
+    if (_rc != RCL_RET_OK) { init_ok = false; }                 \
 }
 
 #define RCSOFTCHECK(fn) {                                       \
     rcl_ret_t _rc = (fn);                                       \
     if (_rc != RCL_RET_OK) { soft_error_count++; }              \
+}
+
+// ---------------------------------------------------------------------------
+// Uchwyty encji micro-ROS — zbiorcza struktura dla create/destroy
+// ---------------------------------------------------------------------------
+typedef struct {
+    rclc_support_t      support;
+    rcl_node_t          node;
+    rcl_publisher_t     wheel_pub;
+    rcl_publisher_t     imu_pub;
+    rcl_publisher_t     mag_pub;
+    rcl_publisher_t     power_pub;
+    rcl_publisher_t     sonar_pub[SONAR_COUNT];
+    rcl_subscription_t  wheel_cmd_sub;
+    rclc_executor_t     executor;
+} RosEntities_t;
+
+static RosEntities_t ros_ent;
+
+// ---------------------------------------------------------------------------
+// Pomocnik: wyslij zerowa predkosc do obu kol (bezpieczenstwo przy utracie polaczenia)
+// ---------------------------------------------------------------------------
+static void dxl_stop_all(void)
+{
+    DXL_RosCommand_t stop = {0};
+    stop.id = ID_LEFT_WHEEL;  stop.speed_pct = 0.0f;
+    osMessageQueuePut(dxl_cmd_queue, &stop, 0, 0);
+    stop.id = ID_RIGHT_WHEEL;
+    osMessageQueuePut(dxl_cmd_queue, &stop, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Tworzenie wszystkich encji micro-ROS (wywolywane po kazdym (re)polaczeniu)
+// Zwraca true jesli wszystko OK.
+// ---------------------------------------------------------------------------
+static bool ros_create_entities(rcl_allocator_t *allocator)
+{
+    bool init_ok = true;
+
+    /* Support — kazdý krok inicjalizowany oddzielnie, by nie wywolywac fini na
+     * niezainicjalizowanej strukturze i nie isc dalej po bledzie. */
+    rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
+    if (rcl_init_options_init(&init_options, *allocator) != RCL_RET_OK) return false;
+    if (rcl_init_options_set_domain_id(&init_options, (size_t)ROS_DOMAIN_ID) != RCL_RET_OK) {
+        rcl_init_options_fini(&init_options);
+        return false;
+    }
+    bool support_ok = (rclc_support_init_with_options(
+        &ros_ent.support, 0, NULL, &init_options, allocator) == RCL_RET_OK);
+    rcl_init_options_fini(&init_options);
+    if (!support_ok) return false;
+
+    (void)rmw_uros_sync_session(1000);
+
+    RCCHECK(rclc_node_init_default(&ros_ent.node, "stm32_robot_node", "", &ros_ent.support));
+    /* Wczesny powrot: publishery nie moga byc inicjalizowane na nieprawidlowym nodzie */
+    if (!init_ok) { rclc_support_fini(&ros_ent.support); return false; }
+
+    /* Inicjalizacja buforow wiadomosci (wskazniki na statyczne bufory) */
+    joint_state_msg_init(&wheel_cmd_msg,
+        cmd_name_data, cmd_name0_buf, cmd_name1_buf,
+        cmd_frame_id_buf, sizeof(cmd_frame_id_buf),
+        cmd_position, cmd_velocity, cmd_effort);
+
+    joint_state_msg_init(&wheel_state_msg,
+        state_name_data, state_name0_buf, state_name1_buf,
+        state_frame_id_buf, sizeof(state_frame_id_buf),
+        state_position, state_velocity, state_effort);
+
+    memset(&imu_msg, 0, sizeof(imu_msg));
+    imu_msg.header.frame_id.data     = imu_frame_id_buf;
+    imu_msg.header.frame_id.size     = strlen(imu_frame_id_buf);
+    imu_msg.header.frame_id.capacity = sizeof(imu_frame_id_buf);
+    imu_msg.orientation_covariance[0] = -1.0;
+    imu_msg.angular_velocity_covariance[0] = 5.1e-7f;
+    imu_msg.angular_velocity_covariance[4] = 5.1e-7f;
+    imu_msg.angular_velocity_covariance[8] = 5.1e-7f;
+    imu_msg.linear_acceleration_covariance[0] = 8.1e-5f;
+    imu_msg.linear_acceleration_covariance[4] = 8.1e-5f;
+    imu_msg.linear_acceleration_covariance[8] = 8.1e-5f;
+
+    memset(&mag_msg, 0, sizeof(mag_msg));
+    mag_msg.header.frame_id.data     = mag_frame_id_buf;
+    mag_msg.header.frame_id.size     = strlen(mag_frame_id_buf);
+    mag_msg.header.frame_id.capacity = sizeof(mag_frame_id_buf);
+
+    memset(&power_msg, 0, sizeof(power_msg));
+    power_msg.data.data     = power_data_buf;
+    power_msg.data.size     = 3;
+    power_msg.data.capacity = 3;
+
+    for (uint8_t i = 0; i < SONAR_COUNT; i++) {
+        memset(&sonar_msg[i], 0, sizeof(sonar_msg[i]));
+        sonar_msg[i].header.frame_id.data     = sonar_frame_id_buf[i];
+        sonar_msg[i].header.frame_id.size     = strlen(sonar_frame_id_buf[i]);
+        sonar_msg[i].header.frame_id.capacity = sizeof(sonar_frame_id_buf[i]);
+        sonar_msg[i].radiation_type = sensor_msgs__msg__Range__ULTRASOUND;
+        sonar_msg[i].field_of_view  = 0.2618f;
+        sonar_msg[i].min_range      = 0.02f;
+        sonar_msg[i].max_range      = 4.00f;
+        sonar_msg[i].range          = 0.0f;
+    }
+
+    /* Publishery */
+    RCCHECK(rclc_publisher_init_default(
+        &ros_ent.wheel_pub, &ros_ent.node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState), "wheel_states"));
+    RCCHECK(rclc_publisher_init_best_effort(
+        &ros_ent.imu_pub, &ros_ent.node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu), "STM_imu"));
+    RCCHECK(rclc_publisher_init_best_effort(
+        &ros_ent.mag_pub, &ros_ent.node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField), "STM_mag"));
+    RCCHECK(rclc_publisher_init_best_effort(
+        &ros_ent.power_pub, &ros_ent.node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "STM_power"));
+
+    {
+        static const char *sonar_topic_names[SONAR_COUNT] = {
+            "STM_sonar_0", "STM_sonar_1", "STM_sonar_2", "STM_sonar_3"
+        };
+        for (uint8_t i = 0; i < SONAR_COUNT; i++) {
+            RCCHECK(rclc_publisher_init_best_effort(
+                &ros_ent.sonar_pub[i], &ros_ent.node,
+                ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Range),
+                sonar_topic_names[i]));
+        }
+    }
+
+    /* Subscriber + executor */
+    RCCHECK(rclc_subscription_init_default(
+        &ros_ent.wheel_cmd_sub, &ros_ent.node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState), "wheel_commands"));
+    RCCHECK(rclc_executor_init(&ros_ent.executor, &ros_ent.support.context, 1, allocator));
+    RCCHECK(rclc_executor_add_subscription(
+        &ros_ent.executor, &ros_ent.wheel_cmd_sub, &wheel_cmd_msg,
+        wheel_cmd_callback, ON_NEW_DATA));
+
+    return init_ok;
+}
+
+// ---------------------------------------------------------------------------
+// Niszczenie wszystkich encji micro-ROS (przed reinicjalizacja)
+// ---------------------------------------------------------------------------
+static void ros_destroy_entities(rcl_allocator_t *allocator)
+{
+    rclc_executor_fini(&ros_ent.executor);
+    rcl_subscription_fini(&ros_ent.wheel_cmd_sub, &ros_ent.node);
+    rcl_publisher_fini(&ros_ent.wheel_pub,   &ros_ent.node);
+    rcl_publisher_fini(&ros_ent.imu_pub,     &ros_ent.node);
+    rcl_publisher_fini(&ros_ent.mag_pub,     &ros_ent.node);
+    rcl_publisher_fini(&ros_ent.power_pub,   &ros_ent.node);
+    for (uint8_t i = 0; i < SONAR_COUNT; i++)
+        rcl_publisher_fini(&ros_ent.sonar_pub[i], &ros_ent.node);
+    rcl_node_fini(&ros_ent.node);
+    rclc_support_fini(&ros_ent.support);
+    (void)allocator;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,13 +416,13 @@ void StartDefaultTask(void *argument)
 {
     (void)argument;
 
-    /* 1. Transport UART1 */
+    /* 1. Transport UART1 — ustawiany raz, nie zmienia sie przy reconnect */
     rmw_uros_set_custom_transport(
         true, (void *)&huart1,
         cubemx_transport_open, cubemx_transport_close,
         cubemx_transport_write, cubemx_transport_read);
 
-    /* 2. Alokator FreeRTOS */
+    /* 2. Alokator FreeRTOS — rowniez raz */
     rcl_allocator_t freeRTOS_allocator = rcutils_get_zero_initialized_allocator();
     freeRTOS_allocator.allocate      = microros_allocate;
     freeRTOS_allocator.deallocate    = microros_deallocate;
@@ -279,282 +433,149 @@ void StartDefaultTask(void *argument)
         while(1) { osDelay(1000); }
     }
 
-    /* 3. Oczekiwanie na agenta - miga dioda GPIO_PIN_3 */
-    while (rmw_uros_ping_agent(100, 10) != RMW_RET_OK) {
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
-        osDelay(500);
-    }
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);  /* Agent polaczony */
-
-    /* 4. Inicjalizacja ROS 2 z ustawieniem ROS_DOMAIN_ID
-     *
-     * Zamiast rclc_support_init uzywamy wariantu *_with_options, zeby
-     * mozna bylo ustawic domain_id (do laczenia zdalnego z PC).
-     */
     rcl_allocator_t allocator = rcl_get_default_allocator();
 
-    rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
-    RCCHECK(rcl_init_options_init(&init_options, allocator));
-    RCCHECK(rcl_init_options_set_domain_id(&init_options, (size_t)ROS_DOMAIN_ID));
-
-    rclc_support_t support;
-    RCCHECK(rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator));
-
-    /* Synchronizacja czasu z agentem - potrzebne do prawidlowego header.stamp.
-     * Jesli sie nie uda, dalej dzialamy ze stamp=0 (ros2_control to akceptuje). */
-    (void)rmw_uros_sync_session(1000);
-
-    rcl_node_t node;
-    RCCHECK(rclc_node_init_default(&node, "stm32_robot_node", "", &support));
-
-    /* 5. Inicjalizacja buforow wiadomosci (header + nazwy + sekwencje) */
-    joint_state_msg_init(&wheel_cmd_msg,
-        cmd_name_data, cmd_name0_buf, cmd_name1_buf,
-        cmd_frame_id_buf, sizeof(cmd_frame_id_buf),
-        cmd_position, cmd_velocity, cmd_effort);
-
-    joint_state_msg_init(&wheel_state_msg,
-        state_name_data, state_name0_buf, state_name1_buf,
-        state_frame_id_buf, sizeof(state_frame_id_buf),
-        state_position, state_velocity, state_effort);
-
-    /* Inicjalizacja sensor_msgs/Imu.
-     * orientation_covariance[0] = -1 oznacza "orientacja nieznana" (brak fuzji). */
-    memset(&imu_msg, 0, sizeof(imu_msg));
-    imu_msg.header.frame_id.data     = imu_frame_id_buf;
-    imu_msg.header.frame_id.size     = strlen(imu_frame_id_buf);
-    imu_msg.header.frame_id.capacity = sizeof(imu_frame_id_buf);
-    imu_msg.orientation_covariance[0] = -1.0;
-    imu_msg.angular_velocity_covariance[0] = 5.1e-7f;
-    imu_msg.angular_velocity_covariance[4] = 5.1e-7f;
-    imu_msg.angular_velocity_covariance[8] = 5.1e-7f;
-    imu_msg.linear_acceleration_covariance[0] = 8.1e-5f;
-    imu_msg.linear_acceleration_covariance[4] = 8.1e-5f;
-    imu_msg.linear_acceleration_covariance[8] = 8.1e-5f;
-
-    /* Inicjalizacja sensor_msgs/MagneticField */
-    memset(&mag_msg, 0, sizeof(mag_msg));
-    mag_msg.header.frame_id.data     = mag_frame_id_buf;
-    mag_msg.header.frame_id.size     = strlen(mag_frame_id_buf);
-    mag_msg.header.frame_id.capacity = sizeof(mag_frame_id_buf);
-
-    /* Inicjalizacja std_msgs/Float32MultiArray dla INA219 */
-    memset(&power_msg, 0, sizeof(power_msg));
-    power_msg.data.data     = power_data_buf;
-    power_msg.data.size     = 3;
-    power_msg.data.capacity = 3;
-
-    /* Inicjalizacja sensor_msgs/Range dla HC-SR04 (4 × sonar) */
-    for (uint8_t i = 0; i < SONAR_COUNT; i++) {
-        memset(&sonar_msg[i], 0, sizeof(sonar_msg[i]));
-        sonar_msg[i].header.frame_id.data     = sonar_frame_id_buf[i];
-        sonar_msg[i].header.frame_id.size     = strlen(sonar_frame_id_buf[i]);
-        sonar_msg[i].header.frame_id.capacity = sizeof(sonar_frame_id_buf[i]);
-        sonar_msg[i].radiation_type = sensor_msgs__msg__Range__ULTRASOUND;
-        sonar_msg[i].field_of_view  = 0.2618f;  /* ~15° w radianach */
-        sonar_msg[i].min_range      = 0.02f;    /* 2 cm */
-        sonar_msg[i].max_range      = 4.00f;    /* 4 m  */
-        sonar_msg[i].range          = 0.0f;
-    }
-
-    /* 6. Publisher /wheel_states */
-    rcl_publisher_t wheel_pub;
-    RCCHECK(rclc_publisher_init_default(
-        &wheel_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
-        "wheel_states"));
-
-    /* Publisher /STM_imu (sensor_msgs/Imu — accel + gyro z LSM6DS3TR-C) */
-    rcl_publisher_t imu_pub;
-    RCCHECK(rclc_publisher_init_best_effort(
-        &imu_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu), "STM_imu"));
-
-    /* Publisher /STM_mag (sensor_msgs/MagneticField — magnetometr LIS3MDL) */
-    rcl_publisher_t mag_pub;
-    RCCHECK(rclc_publisher_init_best_effort(
-        &mag_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField), "STM_mag"));
-
-    /* Publisher /STM_power — napiecie/prad/moc (INA219) */
-    rcl_publisher_t power_pub;
-    RCCHECK(rclc_publisher_init_best_effort(
-        &power_pub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
-        "STM_power"));
-
-    /* Publishery /STM_sonar_0 .. /STM_sonar_3 — HC-SR04 (sensor_msgs/Range) */
-    rcl_publisher_t sonar_pub[SONAR_COUNT];
-    {
-        static const char *sonar_topic_names[SONAR_COUNT] = {
-            "STM_sonar_0", "STM_sonar_1", "STM_sonar_2", "STM_sonar_3"
-        };
-        for (uint8_t i = 0; i < SONAR_COUNT; i++) {
-            RCCHECK(rclc_publisher_init_best_effort(
-                &sonar_pub[i], &node,
-                ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Range),
-                sonar_topic_names[i]));
-        }
-    }
-
-    /* 7. Subscriber /wheel_commands */
-    rcl_subscription_t wheel_cmd_sub;
-    RCCHECK(rclc_subscription_init_default(
-        &wheel_cmd_sub, &node,
-        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
-        "wheel_commands"));
-
-    /* 8. Executor - 1 subskrypcja */
-    rclc_executor_t executor;
-    RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
-    RCCHECK(rclc_executor_add_subscription(
-        &executor, &wheel_cmd_sub, &wheel_cmd_msg,
-        wheel_cmd_callback, ON_NEW_DATA));
-
-    /* 9. Petla glowna */
-    DXL_RosFeedback_t  feedback;
-    IMU_QueueData_t    imu_q    = {0};
-    INA219_QueueData_t ina219_q = {0};
-    Sonar_QueueData_t  sonar_q  = {0};
-    uint32_t last_pub_tick   = 0;
-    uint32_t last_imu_tick   = 0;
-    uint32_t last_power_tick = 0;
-    uint32_t last_sonar_tick = 0;
-    uint32_t last_ping_tick  = 0;
-
+    /* 3. Zewnetrzna petla reconnect — nigdy nie wychodzi */
     for (;;)
     {
-        /* Obsluga subskrypcji - timeout 0 = nieblokujace */
-        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(0));
+        /* 3a. Czekaj na agenta — miga LED GPIO_PIN_3 */
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+        while (rmw_uros_ping_agent(100, 1) != RMW_RET_OK) {
+            HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+            osDelay(500);
+        }
 
-        /* Pobierz najnowszy feedback jesli dostepny (nie blokuje) */
-        osMessageQueueGet(dxl_feedback_queue, &feedback, NULL, 0);
-        osMessageQueueGet(imu_data_queue,     &imu_q,    NULL, 0);
-        osMessageQueueGet(ina219_data_queue,  &ina219_q, NULL, 0);
-        osMessageQueueGet(sonar_data_queue,   &sonar_q,  NULL, 0);
+        /* 3b. Tworzenie encji — jesli blad, czekaj i sprobuj ponownie */
+        if (!ros_create_entities(&allocator)) {
+            osDelay(1000);
+            continue;
+        }
 
-        uint32_t now = osKernelGetTickCount();
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET); /* Agent polaczony */
 
-        /* Publikacja /wheel_states co 20 ms (~50 Hz).
-         * Publikujemy zawsze (z ostatnimi poprawnymi wartosciami),
-         * nie tylko gdy kolejka miala nowe dane — ros2_control wymaga
-         * regularnego strumienia stanu, brak wiadomosci zatrzymuje kontroler.
-         *
-         * Dane z dxl_control.c (DXL_RosFeedback_t.data[]):
-         *   [0] = RIGHT position (stopnie), [1] = RIGHT velocity (DXL raw signed)
-         *   [2] = RIGHT load (%),           [3] = LEFT  position (stopnie)
-         *   [4] = LEFT  velocity (DXL raw), [5] = LEFT  load (%)
-         *
-         * JointState: indeks [0] = left, [1] = right
-         */
-        if ((now - last_pub_tick) >= 20)
+        /* 3c. Petla glowna — dziala dopoki agent odpowiada */
+        DXL_RosFeedback_t  feedback  = {0};
+        IMU_QueueData_t    imu_q     = {0};
+        INA219_QueueData_t ina219_q  = {0};
+        Sonar_QueueData_t  sonar_q   = {0};
+        uint32_t last_pub_tick   = 0;
+        uint32_t last_imu_tick   = 0;
+        uint32_t last_power_tick = 0;
+        uint32_t last_sonar_tick = 0;
+        uint32_t last_ping_tick  = 0;
+
+        for (;;)
         {
-            last_pub_tick = now;
+            rclc_executor_spin_some(&ros_ent.executor, RCL_MS_TO_NS(0));
 
-            /* Predkosc: DXL units -> rad/s
-             * Lewe kolo: montaz lustrzany — fizyczny CW (do przodu) = ujemna
-             * wartosc DXL, ale w ukladzie robota to ruch do przodu = wartosc dodatnia.
-             * Negujemy predkosc lewego kola. */
-            state_velocity[0] = -(double)(feedback.data[4] * DXL_UNIT_TO_RAD_S); /* left  */
-            state_velocity[1] =  (double)(feedback.data[1] * DXL_UNIT_TO_RAD_S); /* right */
+            osMessageQueueGet(dxl_feedback_queue, &feedback, NULL, 0);
+            osMessageQueueGet(imu_data_queue,     &imu_q,    NULL, 0);
+            osMessageQueueGet(ina219_data_queue,  &ina219_q, NULL, 0);
+            osMessageQueueGet(sonar_data_queue,   &sonar_q,  NULL, 0);
 
-            /* Pozycja: akumulowane stopnie -> rad
-             * RIGHT: CCW = rosnaca pozycja DXL = jazda do przodu → bez negacji ✓
-             * LEFT:  CW  = malejaca pozycja DXL = jazda do przodu → NEGACJA (sposob jak predkosc)
-             * BEZ negacji: kontroler liczy Δpos/Δt i widzi ujemna predkosc lewego kola
-             *              przy jeździe do przodu → odometria skrecala by w lewo zamiast jechac prosto. */
-            state_position[0] = -(double)(feedback.data[3] * DEG_TO_RAD); /* left  — NEGACJA */
-            state_position[1] =  (double)(feedback.data[0] * DEG_TO_RAD); /* right — bez negacji */
+            uint32_t now = osKernelGetTickCount();
 
-            /* Effort: load % — negowany razem z predkoscia (znak = kierunek sily) */
-            state_effort[0] = -(double)feedback.data[5]; /* left  */
-            state_effort[1] =  (double)feedback.data[2]; /* right */
+            /* Publikacja /wheel_states co 20 ms (~50 Hz) */
+            if ((now - last_pub_tick) >= 20)
+            {
+                last_pub_tick = now;
 
-            int64_t time_ns = rmw_uros_epoch_nanos();
-            wheel_state_msg.header.stamp.sec     = (int32_t)(time_ns / 1000000000LL);
-            wheel_state_msg.header.stamp.nanosec = (uint32_t)(time_ns % 1000000000LL);
+                state_velocity[0] = -(double)(feedback.data[4] * DXL_UNIT_TO_RAD_S);
+                state_velocity[1] =  (double)(feedback.data[1] * DXL_UNIT_TO_RAD_S);
+                state_position[0] = -(double)(feedback.data[3] * DEG_TO_RAD);
+                state_position[1] =  (double)(feedback.data[0] * DEG_TO_RAD);
+                state_effort[0]   = -(double)feedback.data[5];
+                state_effort[1]   =  (double)feedback.data[2];
 
-            RCSOFTCHECK(rcl_publish(&wheel_pub, &wheel_state_msg, NULL));
-        }
+                int64_t time_ns = rmw_uros_epoch_nanos();
+                wheel_state_msg.header.stamp.sec     = (int32_t)(time_ns / 1000000000LL);
+                wheel_state_msg.header.stamp.nanosec = (uint32_t)(time_ns % 1000000000LL);
 
-        /* Publikacja /STM_imu + /STM_mag co 20 ms (~50 Hz) */
-        if ((now - last_imu_tick) >= 20)
-        {
-            last_imu_tick = now;
-            int64_t ts = rmw_uros_epoch_nanos();
-            int32_t  ts_sec  = (int32_t)(ts / 1000000000LL);
-            uint32_t ts_nsec = (uint32_t)(ts % 1000000000LL);
-
-            imu_msg.header.stamp.sec      = ts_sec;
-            imu_msg.header.stamp.nanosec  = ts_nsec;
-            imu_msg.angular_velocity.x    = (double)imu_q.gyro_x;
-            imu_msg.angular_velocity.y    = (double)imu_q.gyro_y;
-            imu_msg.angular_velocity.z    = (double)imu_q.gyro_z;
-            imu_msg.linear_acceleration.x = (double)imu_q.accel_x;
-            imu_msg.linear_acceleration.y = (double)imu_q.accel_y;
-            imu_msg.linear_acceleration.z = (double)imu_q.accel_z;
-
-            if (imu_q.cov_valid) {
-                imu_msg.angular_velocity_covariance[0] = (double)imu_q.var_gx;
-                imu_msg.angular_velocity_covariance[4] = (double)imu_q.var_gy;
-                imu_msg.angular_velocity_covariance[8] = (double)imu_q.var_gz;
-                imu_msg.linear_acceleration_covariance[0] = (double)imu_q.var_ax;
-                imu_msg.linear_acceleration_covariance[4] = (double)imu_q.var_ay;
-                imu_msg.linear_acceleration_covariance[8] = (double)imu_q.var_az;
+                RCSOFTCHECK(rcl_publish(&ros_ent.wheel_pub, &wheel_state_msg, NULL));
             }
-            RCSOFTCHECK(rcl_publish(&imu_pub, &imu_msg, NULL));
 
-            mag_msg.header.stamp.sec     = ts_sec;
-            mag_msg.header.stamp.nanosec = ts_nsec;
-            mag_msg.magnetic_field.x     = (double)imu_q.mag_x;
-            mag_msg.magnetic_field.y     = (double)imu_q.mag_y;
-            mag_msg.magnetic_field.z     = (double)imu_q.mag_z;
-            if (imu_q.cov_valid) {
-                mag_msg.magnetic_field_covariance[0] = (double)imu_q.var_mx;
-                mag_msg.magnetic_field_covariance[4] = (double)imu_q.var_my;
-                mag_msg.magnetic_field_covariance[8] = (double)imu_q.var_mz;
+            /* Publikacja /STM_imu + /STM_mag co 20 ms (~50 Hz) */
+            if ((now - last_imu_tick) >= 20)
+            {
+                last_imu_tick = now;
+                int64_t ts = rmw_uros_epoch_nanos();
+                int32_t  ts_sec  = (int32_t)(ts / 1000000000LL);
+                uint32_t ts_nsec = (uint32_t)(ts % 1000000000LL);
+
+                imu_msg.header.stamp.sec      = ts_sec;
+                imu_msg.header.stamp.nanosec  = ts_nsec;
+                imu_msg.angular_velocity.x    = (double)imu_q.gyro_x;
+                imu_msg.angular_velocity.y    = (double)imu_q.gyro_y;
+                imu_msg.angular_velocity.z    = (double)imu_q.gyro_z;
+                imu_msg.linear_acceleration.x = (double)imu_q.accel_x;
+                imu_msg.linear_acceleration.y = (double)imu_q.accel_y;
+                imu_msg.linear_acceleration.z = (double)imu_q.accel_z;
+
+                if (imu_q.cov_valid) {
+                    imu_msg.angular_velocity_covariance[0] = (double)imu_q.var_gx;
+                    imu_msg.angular_velocity_covariance[4] = (double)imu_q.var_gy;
+                    imu_msg.angular_velocity_covariance[8] = (double)imu_q.var_gz;
+                    imu_msg.linear_acceleration_covariance[0] = (double)imu_q.var_ax;
+                    imu_msg.linear_acceleration_covariance[4] = (double)imu_q.var_ay;
+                    imu_msg.linear_acceleration_covariance[8] = (double)imu_q.var_az;
+                }
+                RCSOFTCHECK(rcl_publish(&ros_ent.imu_pub, &imu_msg, NULL));
+
+                mag_msg.header.stamp.sec     = ts_sec;
+                mag_msg.header.stamp.nanosec = ts_nsec;
+                mag_msg.magnetic_field.x     = (double)imu_q.mag_x;
+                mag_msg.magnetic_field.y     = (double)imu_q.mag_y;
+                mag_msg.magnetic_field.z     = (double)imu_q.mag_z;
+                if (imu_q.cov_valid) {
+                    mag_msg.magnetic_field_covariance[0] = (double)imu_q.var_mx;
+                    mag_msg.magnetic_field_covariance[4] = (double)imu_q.var_my;
+                    mag_msg.magnetic_field_covariance[8] = (double)imu_q.var_mz;
+                }
+                RCSOFTCHECK(rcl_publish(&ros_ent.mag_pub, &mag_msg, NULL));
             }
-            RCSOFTCHECK(rcl_publish(&mag_pub, &mag_msg, NULL));
-        }
 
-        /* Publikacja /power co 500 ms (INA219 nie wymaga wysokiej czestotliwosci) */
-        if ((now - last_power_tick) >= 500)
-        {
-            last_power_tick = now;
-            power_data_buf[0] = ina219_q.voltage_V;
-            power_data_buf[1] = ina219_q.current_A;
-            power_data_buf[2] = ina219_q.power_W;
-            RCSOFTCHECK(rcl_publish(&power_pub, &power_msg, NULL));
-        }
-
-        /* Publikacja /STM_sonar_N co 200 ms (~5 Hz).
-         * Cykl HC-SR04 trwa ~140 ms (4 sensorow), wiec 200 ms daje zawsze
-         * swiezy pomiar. NaN w range.range oznacza brak echa / poza zasiegiem. */
-        if ((now - last_sonar_tick) >= 200)
-        {
-            last_sonar_tick = now;
-            for (uint8_t i = 0; i < SONAR_COUNT; i++) {
-                int64_t ts_ns = (int64_t)sonar_q.timestamp_ms[i] * 1000000LL;
-                sonar_msg[i].header.stamp.sec     = (int32_t)(ts_ns / 1000000000LL);
-                sonar_msg[i].header.stamp.nanosec = (uint32_t)(ts_ns % 1000000000LL);
-                sonar_msg[i].range = sonar_q.distance_m[i]; /* NaN = brak echa */
-                RCSOFTCHECK(rcl_publish(&sonar_pub[i], &sonar_msg[i], NULL));
+            /* Publikacja /power co 500 ms */
+            if ((now - last_power_tick) >= 500)
+            {
+                last_power_tick = now;
+                power_data_buf[0] = ina219_q.voltage_V;
+                power_data_buf[1] = ina219_q.current_A;
+                power_data_buf[2] = ina219_q.power_W;
+                RCSOFTCHECK(rcl_publish(&ros_ent.power_pub, &power_msg, NULL));
             }
-        }
 
-        /* Ping agenta co 2 s - wykrywa zerwane polaczenie. Przy braku agenta
-         * mozna by zrobic reinit, ale na razie tylko sygnalizujemy LED'em. */
-        if ((now - last_ping_tick) >= 2000) {
-            last_ping_tick = now;
-            if (rmw_uros_ping_agent(100, 1) != RMW_RET_OK) {
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
-            } else {
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
+            /* Publikacja /STM_sonar_N co 200 ms */
+            if ((now - last_sonar_tick) >= 200)
+            {
+                last_sonar_tick = now;
+                for (uint8_t i = 0; i < SONAR_COUNT; i++) {
+                    int64_t ts_ns = (int64_t)sonar_q.timestamp_ms[i] * 1000000LL;
+                    sonar_msg[i].header.stamp.sec     = (int32_t)(ts_ns / 1000000000LL);
+                    sonar_msg[i].header.stamp.nanosec = (uint32_t)(ts_ns % 1000000000LL);
+                    sonar_msg[i].range = sonar_q.distance_m[i];
+                    RCSOFTCHECK(rcl_publish(&ros_ent.sonar_pub[i], &sonar_msg[i], NULL));
+                }
             }
+
+            /* Ping agenta co 2 s — przy braku odpowiedzi: zatrzymaj silniki i reinit */
+            if ((now - last_ping_tick) >= 2000)
+            {
+                last_ping_tick = now;
+                if (rmw_uros_ping_agent(100, 3) != RMW_RET_OK) {
+                    /* Utrata polaczenia: zatrzymaj silniki dla bezpieczenstwa */
+                    dxl_stop_all();
+                    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+                    break; /* wyjdz z petli wewnetrznej → destroy → reconnect */
+                }
+            }
+
+            HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+            osDelay(1);
         }
 
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
-        osDelay(1);
+        /* 3d. Niszczenie encji przed ponowna inicjalizacja */
+        ros_destroy_entities(&allocator);
+        osDelay(500); /* krotka przerwa zanim sprobujemy ping ponownie */
     }
 }
 
