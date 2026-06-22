@@ -54,11 +54,13 @@ void IMU_Manager_Task(void *argument)
     IMU_Data_t      hw;
     IMU_QueueData_t q = {0};
 
-    /* Stan Welford — 6 osi × (mean + M2) */
+    /* Stan Welford — 9 osi × (mean + M2) */
     float mean_gx = 0, mean_gy = 0, mean_gz = 0;
     float mean_ax = 0, mean_ay = 0, mean_az = 0;
+    float mean_mx = 0, mean_my = 0, mean_mz = 0;
     float M2_gx   = 0, M2_gy  = 0, M2_gz  = 0;
     float M2_ax   = 0, M2_ay  = 0, M2_az  = 0;
+    float M2_mx   = 0, M2_my  = 0, M2_mz  = 0;
     uint32_t n = 0;
 
     for (;;)
@@ -77,6 +79,9 @@ void IMU_Manager_Task(void *argument)
             welford_update(hw.accel_x, n, &mean_ax, &M2_ax);
             welford_update(hw.accel_y, n, &mean_ay, &M2_ay);
             welford_update(hw.accel_z, n, &mean_az, &M2_az);
+            welford_update(hw.mag_x,   n, &mean_mx, &M2_mx);
+            welford_update(hw.mag_y,   n, &mean_my, &M2_my);
+            welford_update(hw.mag_z,   n, &mean_mz, &M2_mz);
 
             if (n >= IMU_COV_MIN_SAMPLES)
             {
@@ -87,6 +92,9 @@ void IMU_Manager_Task(void *argument)
                 q.var_ax = M2_ax * inv;
                 q.var_ay = M2_ay * inv;
                 q.var_az = M2_az * inv;
+                q.var_mx = M2_mx * inv;
+                q.var_my = M2_my * inv;
+                q.var_mz = M2_mz * inv;
                 q.cov_valid = true;
 
                 /* Zapobiegaj przepełnieniu akumulatora przy bardzo długim biegu.
@@ -95,7 +103,9 @@ void IMU_Manager_Task(void *argument)
                 {
                     mean_gx = q.gyro_x;  mean_gy = q.gyro_y;  mean_gz = q.gyro_z;
                     mean_ax = q.accel_x; mean_ay = q.accel_y; mean_az = q.accel_z;
+                    mean_mx = q.mag_x;   mean_my = q.mag_y;   mean_mz = q.mag_z;
                     M2_gx = M2_gy = M2_gz = M2_ax = M2_ay = M2_az = 0;
+                    M2_mx = M2_my = M2_mz = 0;
                     n = 1;
                 }
             }

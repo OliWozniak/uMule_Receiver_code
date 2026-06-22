@@ -81,9 +81,9 @@ void DXL_Manager_Task(void *argument)
         {
             /* speed_pct [-100, 100] → raw Dynamixel [0, 1023] + bit kierunku */
             float abs_pct = (cmd.speed_pct < 0.0f) ? -cmd.speed_pct : cmd.speed_pct;
-            uint16_t raw_val = (uint16_t)(abs_pct * 10.23f);
-            if (raw_val > 1023)
-                raw_val = 1023;
+            uint16_t raw_val = (uint16_t)(abs_pct * (DXL_MAX_SPEED_RAW / 100.0f));
+            if (raw_val > DXL_MAX_SPEED_RAW)
+                raw_val = DXL_MAX_SPEED_RAW;
 
             /*
              * Kierunek obrotu (RX-64 w trybie koła):

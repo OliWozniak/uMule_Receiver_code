@@ -509,6 +509,11 @@ void StartDefaultTask(void *argument)
             mag_msg.magnetic_field.x     = (double)imu_q.mag_x;
             mag_msg.magnetic_field.y     = (double)imu_q.mag_y;
             mag_msg.magnetic_field.z     = (double)imu_q.mag_z;
+            if (imu_q.cov_valid) {
+                mag_msg.magnetic_field_covariance[0] = (double)imu_q.var_mx;
+                mag_msg.magnetic_field_covariance[4] = (double)imu_q.var_my;
+                mag_msg.magnetic_field_covariance[8] = (double)imu_q.var_mz;
+            }
             RCSOFTCHECK(rcl_publish(&mag_pub, &mag_msg, NULL));
         }
 

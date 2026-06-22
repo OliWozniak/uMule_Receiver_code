@@ -13,6 +13,7 @@ typedef struct {
     /* Wariancja (diagonala macierzy kowariancji) — liczy Welford online */
     float var_gx, var_gy, var_gz;
     float var_ax, var_ay, var_az;
+    float var_mx, var_my, var_mz;
     bool  cov_valid; /* true po zebraniu IMU_COV_MIN_SAMPLES prob */
 } IMU_QueueData_t;
 

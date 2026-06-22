@@ -9,6 +9,10 @@
 #define ID_RIGHT_WHEEL    3
 #define ID_LEFT_WHEEL     1
 
+// Maksymalna prędkość kół [0–1023 raw DXL, 1023 = ~117 RPM dla RX-64]
+// Zmień tę wartość, by ograniczyć prędkość obu kół jednocześnie.
+#define DXL_MAX_SPEED_RAW  1023
+
 typedef struct {
     uint8_t id;
     float   speed_pct; // -100.0 do 100.0
